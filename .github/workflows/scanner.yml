@@ -1,9 +1,8 @@
 name: Bitget Breakout Scanner
 
 on:
-  schedule:
-    # Har 15 minute ke exact start par chalega (0, 15, 30, 45 minute par)
-    - cron: '0,15,30,45 * * * *'
+  repository_dispatch:
+    types: [run-scanner]
   workflow_dispatch:
 
 jobs:
@@ -26,6 +25,6 @@ jobs:
       - name: Run Scanner Script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEographies }}
         run: |
           python main.py
