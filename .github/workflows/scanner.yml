@@ -2,7 +2,8 @@ name: Bitget Breakout Scanner
 
 on:
   schedule:
-    - cron: '2,17,32,47 * * * *'
+    # Har 15 minute ke exact start par chalega (0, 15, 30, 45 minute par)
+    - cron: '0,15,30,45 * * * *'
   workflow_dispatch:
 
 jobs:
