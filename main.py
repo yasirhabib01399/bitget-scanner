@@ -153,5 +153,4 @@ def scan_market():
             print(f"❌ {symbol}: Not Matched")
 
 if __name__ == "__main__":
-    
     scan_market()
