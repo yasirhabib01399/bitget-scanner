@@ -1,4 +1,3 @@
-import json
 import os
 import time
 import requests
@@ -8,6 +7,9 @@ from datetime import datetime, timezone
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ENABLE_TELEGRAM = True
+
+# True rakhein to har coin ki indicator values log mein print hongi (chart se milane ke liye)
+DEBUG = True
 
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT",
@@ -21,9 +23,9 @@ TIMEFRAME = "15min"
 CANDLE_LIMIT = 100
 CANDLE_MS = 15 * 60 * 1000
 VOLUME_PERIOD = 9
+VWAP_PERIOD = 15
 API_URL = "https://api.bitget.com/api/v2/spot/market/candles"
 
-processed_signals = set()
 
 def send_telegram_message(message):
     if not ENABLE_TELEGRAM or not TELEGRAM_BOT_TOKEN:
@@ -40,6 +42,7 @@ def send_telegram_message(message):
     except Exception as e:
         print(f"❌ Telegram Notification Failed: {e}")
 
+
 def fetch_candles(symbol, retries=3):
     params = {"symbol": symbol, "granularity": TIMEFRAME, "limit": str(CANDLE_LIMIT)}
     for attempt in range(retries):
@@ -48,7 +51,7 @@ def fetch_candles(symbol, retries=3):
             result = response.json()
             if result.get("code") != "00000":
                 raise RuntimeError(result.get("msg", "Bitget API error"))
-            
+
             candles = []
             for row in result.get("data", []):
                 candles.append({
@@ -72,6 +75,7 @@ def fetch_candles(symbol, retries=3):
             time.sleep(2)
     return None
 
+
 def add_indicators(candles):
     closes = [c["close"] for c in candles]
     ema9, ema21 = [], []
@@ -85,12 +89,12 @@ def add_indicators(candles):
         ema9.append(e9)
         ema21.append(e21)
 
-    cumulative_pv, cumulative_volume = 0.0, 0.0
-    for candle in candles:
-        typical_price = (candle["high"] + candle["low"] + candle["close"]) / 3.0
-        cumulative_pv += typical_price * candle["volume"]
-        cumulative_volume += candle["volume"]
-        candle["VWAP"] = cumulative_pv / cumulative_volume if cumulative_volume > 0 else float("nan")
+    # Rolling VWAP (chart ke VWAP(15) jaisa)
+    for i, candle in enumerate(candles):
+        window = candles[max(0, i - VWAP_PERIOD + 1): i + 1]
+        pv = sum(((c["high"] + c["low"] + c["close"]) / 3.0) * c["volume"] for c in window)
+        vol = sum(c["volume"] for c in window)
+        candle["VWAP"] = pv / vol if vol > 0 else float("nan")
 
     for i, candle in enumerate(candles):
         candle["EMA9"] = ema9[i]
@@ -101,6 +105,7 @@ def add_indicators(candles):
         else:
             candle["Volume_SMA9"] = None
     return candles
+
 
 def check_single_candle(candles, index):
     if index < VOLUME_PERIOD:
@@ -117,8 +122,9 @@ def check_single_candle(candles, index):
         return current
     return None
 
+
 def scan_market():
-    # Bitget candle close hone ke 20-25 seconds baad data fetch karne ke liye thora wait
+    # Bitget candle close hone ke baad data fetch karne ke liye thora wait
     time.sleep(20)
 
     print("=" * 50)
@@ -130,16 +136,26 @@ def scan_market():
         if candles is None:
             continue
         candles = add_indicators(candles)
-        
+
         # Sirf sab se aakhri (latest completed) candle check karein
         index = len(candles) - 1
         current = candles[index]
         signal = check_single_candle(candles, index)
-        
+
+        if DEBUG:
+            t = datetime.fromtimestamp(current["timestamp"] / 1000, tz=timezone.utc).strftime('%H:%M')
+            sma = current["Volume_SMA9"]
+            sma_str = f"{sma:.0f}" if sma is not None else "NA"
+            print(
+                f"{symbol} {t}UTC O:{current['open']:.5g} C:{current['close']:.5g} "
+                f"EMA9:{current['EMA9']:.5g} EMA21:{current['EMA21']:.5g} "
+                f"VWAP:{current['VWAP']:.5g} Vol:{current['volume']:.0f} SMA9:{sma_str}"
+            )
+
         if signal is not None:
             time_str = datetime.fromtimestamp(signal["timestamp"] / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
             print(f"🎯 MATCHED: {symbol} at {time_str}")
-            
+
             telegram_msg = (
                 f"🚨 <b>BULLISH BREAKOUT DETECTED</b>\n\n"
                 f"🪙 <b>Symbol:</b> #{symbol}\n"
@@ -151,6 +167,7 @@ def scan_market():
             send_telegram_message(telegram_msg)
         else:
             print(f"❌ {symbol}: Not Matched")
+
 
 if __name__ == "__main__":
     scan_market()
