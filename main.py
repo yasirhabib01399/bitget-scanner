@@ -9,7 +9,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ENABLE_TELEGRAM = True
 
 # True rakhein to har coin ki indicator values log mein print hongi (chart se milane ke liye)
-DEBUG = True
+DEBUG = False
 
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT",
