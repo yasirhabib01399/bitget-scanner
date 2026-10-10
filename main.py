@@ -9,7 +9,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ENABLE_TELEGRAM = True
 
 # True rakhein to har coin ki indicator values log mein print hongi (chart se milane ke liye)
-DEBUG = False
+DEBUG = True
 
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT",
@@ -32,6 +32,19 @@ SR_PERIOD = 15
 MIN_RESISTANCE_GAP_PCT = 1.3
 # False = agar close pehle hi resistance ke upar nikal chuka ho to signal nahi aaye ga
 ALLOW_CLOSE_ABOVE_RESISTANCE = False
+
+# 1H confirmation: 15m signal ke baad 1H ki CURRENT (chalti hui) candle ki price par:
+#  - UPAR: EMA9, EMA21, VWAP(15), Resistance(15) mein se jo level price ke UPAR ho, us se kam az kam
+#    H1_MIN_GAP_PCT % faasla ho. Jo level price ke neeche ho use ignore kiya jata hai.
+#  - NEECHE: sirf Support dekhte hain. Support price se kam az kam H1_MIN_SUPPORT_GAP_PCT % neeche
+#    (door) ho to shart poori. Support is se qareeb ho ya price support se neeche aa chuki ho
+#    (support toot gayi) to match complete nahi hota.
+ENABLE_1H_CONFIRMATION = True
+H1_TIMEFRAME = "1h"
+H1_CANDLE_MS = 60 * 60 * 1000
+H1_MIN_GAP_PCT = 1.3
+H1_MIN_SUPPORT_GAP_PCT = 1.3
+
 API_URL = "https://api.bitget.com/api/v2/spot/market/candles"
 
 
@@ -51,8 +64,12 @@ def send_telegram_message(message):
         print(f"❌ Telegram Notification Failed: {e}")
 
 
-def fetch_candles(symbol, retries=3):
-    params = {"symbol": symbol, "granularity": TIMEFRAME, "limit": str(CANDLE_LIMIT)}
+def fetch_candles(symbol, retries=3, timeframe=TIMEFRAME, candle_ms=CANDLE_MS, only_completed=True):
+    """
+    only_completed=True  -> sirf band ho chuki candles (15m scan ke liye)
+    only_completed=False -> chalti hui (current) candle bhi shamil (1H confirmation ke liye)
+    """
+    params = {"symbol": symbol, "granularity": timeframe, "limit": str(CANDLE_LIMIT)}
     for attempt in range(retries):
         try:
             response = requests.get(API_URL, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
@@ -71,8 +88,9 @@ def fetch_candles(symbol, retries=3):
                     "volume": float(row[5])
                 })
             candles.sort(key=lambda x: x["timestamp"])
-            now_ms = int(time.time() * 1000)
-            candles = [c for c in candles if c["timestamp"] + CANDLE_MS <= now_ms]
+            if only_completed:
+                now_ms = int(time.time() * 1000)
+                candles = [c for c in candles if c["timestamp"] + candle_ms <= now_ms]
             if len(candles) < 30:
                 raise RuntimeError("Insufficient completed candles")
             return candles
@@ -158,6 +176,79 @@ def check_single_candle(candles, index):
     return None
 
 
+def check_1h_confirmation(symbol):
+    """
+    1H ki CURRENT (chalti hui) candle ki price (close) par:
+      - EMA9, EMA21, VWAP(15), Resistance(15): jo level price ke UPAR ho us se faasla
+        (level - price) / price * 100 kam az kam H1_MIN_GAP_PCT hona chahiye. Jo level price ke
+        neeche (ya barabar) ho wo ignore hota hai.
+      - Support(15): faasla (price - support) / price * 100 kam az kam H1_MIN_SUPPORT_GAP_PCT
+        hona chahiye (support door neeche). Support qareeb ho, ya price support se neeche aa chuki
+        ho (faasla negative), to FAIL.
+
+    Wapas: None (data nahi mila) ya (sab_pass, [(naam, value, gap_pct, ok, kind), ...])
+    kind: "above" (upar ki rukawat), "below" (neeche, ignore), "support", "na" (data nahi)
+    """
+    candles = fetch_candles(symbol, timeframe=H1_TIMEFRAME, candle_ms=H1_CANDLE_MS, only_completed=False)
+    if candles is None:
+        return None
+    candles = add_indicators(candles)
+    index = len(candles) - 1
+    add_support_resistance(candles, index)
+    current = candles[index]
+    price = current["close"]
+
+    rows = []
+    all_pass = True
+
+    # Upar ki rukawatein: sirf wohi levels ginay jaate hain jo price ke upar hon
+    for name in ("EMA9", "EMA21", "VWAP", "Resistance"):
+        value = current.get(name)
+        if value is None or price <= 0:
+            rows.append((name, None, None, False, "na"))
+            all_pass = False
+            continue
+        gap = (value - price) / price * 100.0
+        if gap <= 0:
+            rows.append((name, value, gap, True, "below"))   # price ke neeche: ignore
+            continue
+        ok = gap >= H1_MIN_GAP_PCT
+        rows.append((name, value, gap, ok, "above"))
+        if not ok:
+            all_pass = False
+
+    # Neeche: sirf Support. Support kam az kam H1_MIN_SUPPORT_GAP_PCT % door ho to PASS,
+    # qareeb ho ya toot chuki ho (price support se neeche) to FAIL
+    support = current.get("Support")
+    if support is None or price <= 0:
+        rows.append(("Support", None, None, False, "na"))
+        all_pass = False
+    else:
+        sup_gap = (price - support) / price * 100.0
+        ok = sup_gap >= H1_MIN_SUPPORT_GAP_PCT
+        rows.append(("Support", support, sup_gap, ok, "support"))
+        if not ok:
+            all_pass = False
+
+    return all_pass, rows
+
+
+def format_1h_rows(rows):
+    parts = []
+    for name, value, gap, ok, kind in rows:
+        if kind == "na":
+            parts.append(f"{name} NA ❌")
+        elif kind == "below":
+            parts.append(f"{name} neeche (ignore)")
+        elif kind == "above":
+            parts.append(f"{name} {gap:.2f}% upar {'✅' if ok else '❌'}")
+        elif gap >= 0:
+            parts.append(f"{name} {gap:.2f}% neeche {'✅' if ok else '❌'}")
+        else:
+            parts.append(f"{name} toot gayi (price {abs(gap):.2f}% neeche) ❌")
+    return " | ".join(parts)
+
+
 def scan_market():
     # Bitget candle close hone ke baad data fetch karne ke liye thora wait
     time.sleep(20)
@@ -196,7 +287,26 @@ def scan_market():
 
         if signal is not None:
             time_str = datetime.fromtimestamp(signal["timestamp"] / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-            print(f"🎯 MATCHED: {symbol} at {time_str}")
+            print(f"🎯 15m MATCHED: {symbol} at {time_str}")
+
+            # 15m signal ban gaya, ab 1H confirmation check karein
+            h1_line = ""
+            if ENABLE_1H_CONFIRMATION:
+                h1 = check_1h_confirmation(symbol)
+                if h1 is None:
+                    print(f"⚠️ {symbol}: 1H data nahi mila, signal skip kiya")
+                    continue
+                h1_ok, h1_rows = h1
+                h1_summary = format_1h_rows(h1_rows)
+                if not h1_ok:
+                    print(f"❌ {symbol}: 15m matched lekin 1H confirmation FAIL ({h1_summary})")
+                    continue
+                print(f"✅ {symbol}: 1H confirmation PASS ({h1_summary})")
+                h1_line = (
+                    f"\n⏱ <b>1H Confirmation:</b> ✅ (upar ki rukawatein {H1_MIN_GAP_PCT}%+ door, "
+                    f"support {H1_MIN_SUPPORT_GAP_PCT}%+ neeche)\n"
+                    f"   {h1_summary}"
+                )
 
             telegram_msg = (
                 f"🚨 <b>BULLISH BREAKOUT DETECTED</b>\n\n"
@@ -207,6 +317,7 @@ def scan_market():
                 f"🔥 <b>Volume:</b> {signal['volume']:.2f}\n"
                 f"🧱 <b>Resistance:</b> {signal['Resistance']:.8g} ({signal['Res_gap_pct']:.2f}% door)\n"
                 f"🛟 <b>Support:</b> {signal['Support']:.8g}"
+                f"{h1_line}"
             )
             send_telegram_message(telegram_msg)
         else:
