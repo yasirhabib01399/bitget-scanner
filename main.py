@@ -29,7 +29,7 @@ VWAP_PERIOD = 15
 # (Bitget ke S/R indicator, parameter 15, se match kiya hua). Signal candle shamil nahi.
 SR_PERIOD = 15
 # Close price resistance se kam az kam itne % neeche ho (maximum ki koi hadd nahi)
-MIN_RESISTANCE_GAP_PCT = 0.9
+MIN_RESISTANCE_GAP_PCT = 1.3
 # False = agar close pehle hi resistance ke upar nikal chuka ho to signal nahi aaye ga
 ALLOW_CLOSE_ABOVE_RESISTANCE = False
 API_URL = "https://api.bitget.com/api/v2/spot/market/candles"
