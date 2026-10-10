@@ -9,7 +9,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ENABLE_TELEGRAM = True
 
 # True rakhein to har coin ki indicator values log mein print hongi (chart se milane ke liye)
-DEBUG = False
+DEBUG = True
 
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT",
@@ -24,6 +24,14 @@ CANDLE_LIMIT = 100
 CANDLE_MS = 15 * 60 * 1000
 VOLUME_PERIOD = 9
 VWAP_PERIOD = 15
+
+# Support / Resistance: pichli SR_PERIOD candles ka sab se ooncha High / neecha Low
+# (Bitget ke S/R indicator, parameter 15, se match kiya hua). Signal candle shamil nahi.
+SR_PERIOD = 15
+# Close price resistance se kam az kam itne % neeche ho (maximum ki koi hadd nahi)
+MIN_RESISTANCE_GAP_PCT = 0.9
+# False = agar close pehle hi resistance ke upar nikal chuka ho to signal nahi aaye ga
+ALLOW_CLOSE_ABOVE_RESISTANCE = False
 API_URL = "https://api.bitget.com/api/v2/spot/market/candles"
 
 
@@ -107,18 +115,45 @@ def add_indicators(candles):
     return candles
 
 
+def add_support_resistance(candles, index):
+    """
+    candles[index] ke liye Support/Resistance nikaal kar usi candle mein save karta hai.
+    Resistance = pichli SR_PERIOD candles ka max High, Support = min Low
+    (candles[index] khud shamil nahi). Gap % = (Resistance - Close) / Close * 100
+    """
+    current = candles[index]
+    if index < SR_PERIOD:
+        current["Resistance"] = None
+        current["Support"] = None
+        current["Res_gap_pct"] = None
+        return
+    window = candles[index - SR_PERIOD:index]
+    resistance = max(c["high"] for c in window)
+    support = min(c["low"] for c in window)
+    current["Resistance"] = resistance
+    current["Support"] = support
+    current["Res_gap_pct"] = (resistance - current["close"]) / current["close"] * 100.0
+
+
 def check_single_candle(candles, index):
     if index < VOLUME_PERIOD:
         return None
     current = candles[index]
-    if current["Volume_SMA9"] is None:
+    add_support_resistance(candles, index)
+    if current["Volume_SMA9"] is None or current["Resistance"] is None:
         return None
 
     open_below_all = current["open"] < current["EMA9"] and current["open"] < current["EMA21"] and current["open"] < current["VWAP"]
     close_above_all = current["close"] > current["EMA9"] and current["close"] > current["EMA21"] and current["close"] > current["VWAP"]
     volume_confirmed = current["volume"] > current["Volume_SMA9"]
 
-    if open_below_all and close_above_all and volume_confirmed:
+    gap = current["Res_gap_pct"]
+    if gap >= MIN_RESISTANCE_GAP_PCT:
+        resistance_ok = True
+    else:
+        resistance_ok = ALLOW_CLOSE_ABOVE_RESISTANCE and gap < 0
+
+    if open_below_all and close_above_all and volume_confirmed and resistance_ok:
         return current
     return None
 
@@ -146,10 +181,17 @@ def scan_market():
             t = datetime.fromtimestamp(current["timestamp"] / 1000, tz=timezone.utc).strftime('%H:%M')
             sma = current["Volume_SMA9"]
             sma_str = f"{sma:.0f}" if sma is not None else "NA"
+            res = current.get("Resistance")
+            sup = current.get("Support")
+            gap = current.get("Res_gap_pct")
+            res_str = f"{res:.5g}" if res is not None else "NA"
+            sup_str = f"{sup:.5g}" if sup is not None else "NA"
+            gap_str = f"{gap:.2f}%" if gap is not None else "NA"
             print(
                 f"{symbol} {t}UTC O:{current['open']:.5g} C:{current['close']:.5g} "
                 f"EMA9:{current['EMA9']:.5g} EMA21:{current['EMA21']:.5g} "
-                f"VWAP:{current['VWAP']:.5g} Vol:{current['volume']:.0f} SMA9:{sma_str}"
+                f"VWAP:{current['VWAP']:.5g} Vol:{current['volume']:.0f} SMA9:{sma_str} "
+                f"Res:{res_str} Sup:{sup_str} Gap:{gap_str}"
             )
 
         if signal is not None:
@@ -162,7 +204,9 @@ def scan_market():
                 f"🕐 <b>Candle Time:</b> {time_str}\n"
                 f"📊 <b>Open:</b> {signal['open']:.8g}\n"
                 f"🎯 <b>Close:</b> {signal['close']:.8g}\n"
-                f"🔥 <b>Volume:</b> {signal['volume']:.2f}"
+                f"🔥 <b>Volume:</b> {signal['volume']:.2f}\n"
+                f"🧱 <b>Resistance:</b> {signal['Resistance']:.8g} ({signal['Res_gap_pct']:.2f}% door)\n"
+                f"🛟 <b>Support:</b> {signal['Support']:.8g}"
             )
             send_telegram_message(telegram_msg)
         else:
