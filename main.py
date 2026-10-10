@@ -186,7 +186,7 @@ def check_1h_confirmation(symbol):
         hona chahiye (support door neeche). Support qareeb ho, ya price support se neeche aa chuki
         ho (faasla negative), to FAIL.
 
-    Wapas: None (data nahi mila) ya (sab_pass, [(naam, value, gap_pct, ok, kind), ...])
+    Wapas: None (data nahi mila) ya (sab_pass, [(naam, value, gap_pct, ok, kind), ...], 1H_price)
     kind: "above" (upar ki rukawat), "below" (neeche, ignore), "support", "na" (data nahi)
     """
     candles = fetch_candles(symbol, timeframe=H1_TIMEFRAME, candle_ms=H1_CANDLE_MS, only_completed=False)
@@ -230,7 +230,7 @@ def check_1h_confirmation(symbol):
         if not ok:
             all_pass = False
 
-    return all_pass, rows
+    return all_pass, rows, price
 
 
 def format_1h_rows(rows):
@@ -246,6 +246,23 @@ def format_1h_rows(rows):
             parts.append(f"{name} {gap:.2f}% neeche {'✅' if ok else '❌'}")
         else:
             parts.append(f"{name} toot gayi (price {abs(gap):.2f}% neeche) ❌")
+    return " | ".join(parts)
+
+
+def format_1h_debug(rows):
+    """Debug log ke liye: har level ki value aur price se faasla (chart se milane ke liye)"""
+    parts = []
+    for name, value, gap, ok, kind in rows:
+        if kind == "na":
+            parts.append(f"{name}:NA")
+        elif kind == "below":
+            parts.append(f"{name}:{value:.5g}(neeche {abs(gap):.2f}% ignore)")
+        elif kind == "above":
+            parts.append(f"{name}:{value:.5g}(upar {gap:.2f}% {'OK' if ok else 'FAIL'})")
+        elif gap >= 0:
+            parts.append(f"{name}:{value:.5g}(neeche {gap:.2f}% {'OK' if ok else 'FAIL'})")
+        else:
+            parts.append(f"{name}:{value:.5g}(toot gayi, price {abs(gap):.2f}% neeche FAIL)")
     return " | ".join(parts)
 
 
@@ -268,6 +285,11 @@ def scan_market():
         current = candles[index]
         signal = check_single_candle(candles, index)
 
+        # 1H data: DEBUG mein har coin ke liye (log dekhne ke liye), warna sirf 15m signal par
+        h1 = None
+        if ENABLE_1H_CONFIRMATION and (DEBUG or signal is not None):
+            h1 = check_1h_confirmation(symbol)
+
         if DEBUG:
             t = datetime.fromtimestamp(current["timestamp"] / 1000, tz=timezone.utc).strftime('%H:%M')
             sma = current["Volume_SMA9"]
@@ -284,6 +306,15 @@ def scan_market():
                 f"VWAP:{current['VWAP']:.5g} Vol:{current['volume']:.0f} SMA9:{sma_str} "
                 f"Res:{res_str} Sup:{sup_str} Gap:{gap_str}"
             )
+            if ENABLE_1H_CONFIRMATION:
+                if h1 is None:
+                    print(f"   1H: data nahi mila")
+                else:
+                    h1_ok_dbg, h1_rows_dbg, h1_price_dbg = h1
+                    print(
+                        f"   1H [{'PASS' if h1_ok_dbg else 'FAIL'}] Price:{h1_price_dbg:.5g} "
+                        f"{format_1h_debug(h1_rows_dbg)}"
+                    )
 
         if signal is not None:
             time_str = datetime.fromtimestamp(signal["timestamp"] / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
@@ -292,21 +323,26 @@ def scan_market():
             # 15m signal ban gaya, ab 1H confirmation check karein
             h1_line = ""
             if ENABLE_1H_CONFIRMATION:
-                h1 = check_1h_confirmation(symbol)
                 if h1 is None:
-                    print(f"⚠️ {symbol}: 1H data nahi mila, signal skip kiya")
-                    continue
-                h1_ok, h1_rows = h1
-                h1_summary = format_1h_rows(h1_rows)
-                if not h1_ok:
-                    print(f"❌ {symbol}: 15m matched lekin 1H confirmation FAIL ({h1_summary})")
-                    continue
-                print(f"✅ {symbol}: 1H confirmation PASS ({h1_summary})")
-                h1_line = (
-                    f"\n⏱ <b>1H Confirmation:</b> ✅ (upar ki rukawatein {H1_MIN_GAP_PCT}%+ door, "
-                    f"support {H1_MIN_SUPPORT_GAP_PCT}%+ neeche)\n"
-                    f"   {h1_summary}"
-                )
+                    # Sirf 1H ka data na milne par alert phir bhi jaye ga (warning ke saath)
+                    print(f"⚠️ {symbol}: 1H data nahi mila, 15m signal warning ke saath bheja ja raha hai")
+                    h1_line = (
+                        f"\n⚠️ <b>1H Confirmation:</b> 1H data nahi mila, check nahi ho saka. "
+                        f"Khud 1H chart dekh lein."
+                    )
+                else:
+                    h1_ok, h1_rows, _h1_price = h1
+                    h1_summary = format_1h_rows(h1_rows)
+                    if not h1_ok:
+                        # 1H check hua aur shart poori nahi hui -> alert nahi
+                        print(f"❌ {symbol}: 15m matched lekin 1H confirmation FAIL ({h1_summary})")
+                        continue
+                    print(f"✅ {symbol}: 1H confirmation PASS ({h1_summary})")
+                    h1_line = (
+                        f"\n⏱ <b>1H Confirmation:</b> ✅ (upar ki rukawatein {H1_MIN_GAP_PCT}%+ door, "
+                        f"support {H1_MIN_SUPPORT_GAP_PCT}%+ neeche)\n"
+                        f"   {h1_summary}"
+                    )
 
             telegram_msg = (
                 f"🚨 <b>BULLISH BREAKOUT DETECTED</b>\n\n"
