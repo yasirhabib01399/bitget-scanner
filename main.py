@@ -1,7 +1,8 @@
+import csv
 import os
 import time
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # Telegram credentials from GitHub Secrets
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -19,31 +20,39 @@ SYMBOLS = [
     "BNBUSDT", "NEARUSDT", "QNTUSDT"
 ]
 
+# ======================= STRATEGY (sirf 15m chart) =======================
+# SIGNAL tab aata hai jab 15m ki band candle:
+#   1) CLOSE teeno (EMA9, EMA21, VWAP) ke upar ho, AUR
+#   2) un teeno mein se kam az kam aik ko cross kare (yani OPEN us level ke neeche tha), AUR
+#   3) volume pichli 9 candles ke average (SMA9) x VOLUME_MULT se zyada ho, AUR
+#   4) close se Resistance kam az kam MIN_RESISTANCE_GAP_PCT % door ho.
+# Is mein teeno cases shamil hain:
+#   - teeno ko cross (open teeno ke neeche)
+#   - aik level pehle se neeche, baaki do ko cross
+#   - do levels pehle se neeche, baaki aik ko cross
+# Agar teeno levels pehle se open ke neeche hon (koi cross nahi) to signal nahi.
 TIMEFRAME = "15min"
 CANDLE_LIMIT = 100
 CANDLE_MS = 15 * 60 * 1000
 VOLUME_PERIOD = 9
+VOLUME_MULT = 1.0          # 1.0 = SMA9 se zyada. "Bara volume" chahiye to 1.5 / 2.0
 VWAP_PERIOD = 15
 
-# Support / Resistance: pichli SR_PERIOD candles ka sab se ooncha High / neecha Low
-# (Bitget ke S/R indicator, parameter 15, se match kiya hua). Signal candle shamil nahi.
+# Resistance: pichli SR_PERIOD candles ka sab se ooncha High (Bitget S/R indicator, parameter 15, jaisa).
 SR_PERIOD = 15
-# Close price resistance se kam az kam itne % neeche ho (maximum ki koi hadd nahi)
-MIN_RESISTANCE_GAP_PCT = 1.3
+MIN_RESISTANCE_GAP_PCT = 0.8
 # False = agar close pehle hi resistance ke upar nikal chuka ho to signal nahi aaye ga
 ALLOW_CLOSE_ABOVE_RESISTANCE = False
 
-# 1H confirmation: 15m signal ke baad 1H ki CURRENT (chalti hui) candle ki price par:
-#  - UPAR: EMA9, EMA21, VWAP(15), Resistance(15) mein se jo level price ke UPAR ho, us se kam az kam
-#    H1_MIN_GAP_PCT % faasla ho. Jo level price ke neeche ho use ignore kiya jata hai.
-#  - NEECHE: sirf Support dekhte hain. Support price se kam az kam H1_MIN_SUPPORT_GAP_PCT % neeche
-#    (door) ho to shart poori. Support is se qareeb ho ya price support se neeche aa chuki ho
-#    (support toot gayi) to match complete nahi hota.
-ENABLE_1H_CONFIRMATION = True
-H1_TIMEFRAME = "1h"
-H1_CANDLE_MS = 60 * 60 * 1000
-H1_MIN_GAP_PCT = 1.3
-H1_MIN_SUPPORT_GAP_PCT = 1.3
+# Alert mein dikhane ke liye TP/SL (close se %)
+TP_PCT = 0.8
+SL_PCT = 0.4
+
+# Signal log (paper trade): har signal signals_log.csv mein save hota hai aur baad ke runs mein
+# khud result (TP/SL) bhar diya jata hai. Entry = signal candle ka close.
+ENABLE_SIGNAL_LOG = True
+SIGNAL_LOG_FILE = "signals_log.csv"
+LOG_TRACK_CANDLES = 88     # itni 15m candles (~22 ghantay) tak dekhte hain, phir bhi kuch hit na ho to NONE
 
 API_URL = "https://api.bitget.com/api/v2/spot/market/candles"
 
@@ -65,10 +74,7 @@ def send_telegram_message(message):
 
 
 def fetch_candles(symbol, retries=3, timeframe=TIMEFRAME, candle_ms=CANDLE_MS, only_completed=True):
-    """
-    only_completed=True  -> sirf band ho chuki candles (15m scan ke liye)
-    only_completed=False -> chalti hui (current) candle bhi shamil (1H confirmation ke liye)
-    """
+    """Sirf band ho chuki candles (only_completed=True)."""
     params = {"symbol": symbol, "granularity": timeframe, "limit": str(CANDLE_LIMIT)}
     for attempt in range(retries):
         try:
@@ -135,9 +141,9 @@ def add_indicators(candles):
 
 def add_support_resistance(candles, index):
     """
-    candles[index] ke liye Support/Resistance nikaal kar usi candle mein save karta hai.
-    Resistance = pichli SR_PERIOD candles ka max High, Support = min Low
-    (candles[index] khud shamil nahi). Gap % = (Resistance - Close) / Close * 100
+    candles[index] ke liye Resistance (aur Support, sirf jankari ke liye) nikaal kar usi candle mein save karta hai.
+    Resistance = pichli SR_PERIOD candles ka max High (candles[index] khud shamil nahi).
+    Gap % = (Resistance - Close) / Close * 100
     """
     current = candles[index]
     if index < SR_PERIOD:
@@ -154,6 +160,7 @@ def add_support_resistance(candles, index):
 
 
 def check_single_candle(candles, index):
+    """Signal ho to candle (dict) wapas, warna None. current["Crossed"] mein cross kiye hue levels ki list."""
     if index < VOLUME_PERIOD:
         return None
     current = candles[index]
@@ -161,9 +168,10 @@ def check_single_candle(candles, index):
     if current["Volume_SMA9"] is None or current["Resistance"] is None:
         return None
 
-    open_below_all = current["open"] < current["EMA9"] and current["open"] < current["EMA21"] and current["open"] < current["VWAP"]
-    close_above_all = current["close"] > current["EMA9"] and current["close"] > current["EMA21"] and current["close"] > current["VWAP"]
-    volume_confirmed = current["volume"] > current["Volume_SMA9"]
+    levels = {"EMA9": current["EMA9"], "EMA21": current["EMA21"], "VWAP": current["VWAP"]}
+    close_above_all = all(current["close"] > v for v in levels.values())
+    crossed = [name for name, v in levels.items() if current["open"] < v]     # open neeche, close upar
+    volume_confirmed = current["volume"] > current["Volume_SMA9"] * VOLUME_MULT
 
     gap = current["Res_gap_pct"]
     if gap >= MIN_RESISTANCE_GAP_PCT:
@@ -171,108 +179,143 @@ def check_single_candle(candles, index):
     else:
         resistance_ok = ALLOW_CLOSE_ABOVE_RESISTANCE and gap < 0
 
-    if open_below_all and close_above_all and volume_confirmed and resistance_ok:
+    if close_above_all and len(crossed) >= 1 and volume_confirmed and resistance_ok:
+        current["Crossed"] = crossed
         return current
     return None
 
 
-def check_1h_confirmation(symbol):
-    """
-    1H ki CURRENT (chalti hui) candle ki price (close) par:
-      - EMA9, EMA21, VWAP(15), Resistance(15): jo level price ke UPAR ho us se faasla
-        (level - price) / price * 100 kam az kam H1_MIN_GAP_PCT hona chahiye. Jo level price ke
-        neeche (ya barabar) ho wo ignore hota hai.
-      - Support(15): faasla (price - support) / price * 100 kam az kam H1_MIN_SUPPORT_GAP_PCT
-        hona chahiye (support door neeche). Support qareeb ho, ya price support se neeche aa chuki
-        ho (faasla negative), to FAIL.
+# ======================= SIGNAL LOG (signals_log.csv) =======================
+def _log_fields():
+    return ["signal_ts_ms", "signal_time_utc", "signal_time_pkt", "symbol", "entry_close", "tp_price", "sl_price",
+            "open", "volume", "vol_ratio", "body_pct", "res_gap_pct", "n_crossed", "crossed_levels", "status",
+            f"result_tp{TP_PCT}_sl{SL_PCT}", "hours_to_exit", "max_up_pct", "max_down_pct", "candles_tracked"]
 
-    Wapas: None (data nahi mila) ya (sab_pass, [(naam, value, gap_pct, ok, kind), ...], 1H_price)
-    kind: "above" (upar ki rukawat), "below" (neeche, ignore), "support", "na" (data nahi)
-    """
-    candles = fetch_candles(symbol, timeframe=H1_TIMEFRAME, candle_ms=H1_CANDLE_MS, only_completed=False)
-    if candles is None:
-        return None
-    candles = add_indicators(candles)
-    index = len(candles) - 1
-    add_support_resistance(candles, index)
-    current = candles[index]
-    price = current["close"]
 
-    rows = []
-    all_pass = True
+RESULT_COL = f"result_tp{TP_PCT}_sl{SL_PCT}"
 
-    # Upar ki rukawatein: sirf wohi levels ginay jaate hain jo price ke upar hon
-    for name in ("EMA9", "EMA21", "VWAP", "Resistance"):
-        value = current.get(name)
-        if value is None or price <= 0:
-            rows.append((name, None, None, False, "na"))
-            all_pass = False
+
+def load_signal_log():
+    if not os.path.exists(SIGNAL_LOG_FILE):
+        return []
+    try:
+        with open(SIGNAL_LOG_FILE, newline="", encoding="utf-8") as fh:
+            return list(csv.DictReader(fh))
+    except Exception as e:
+        print(f"⚠️ Signal log padh nahi saka: {e}")
+        return []
+
+
+def save_signal_log(rows):
+    try:
+        with open(SIGNAL_LOG_FILE, "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=_log_fields(), extrasaction="ignore")
+            w.writeheader()
+            for r in rows:
+                w.writerow(r)
+    except Exception as e:
+        print(f"⚠️ Signal log save nahi hua: {e}")
+
+
+def log_signal(symbol, signal, tp_price, sl_price):
+    """Signal ko CSV mein jorta hai (same symbol + candle dobara nahi likhta)."""
+    if not ENABLE_SIGNAL_LOG:
+        return
+    rows = load_signal_log()
+    key = str(signal["timestamp"])
+    if any(r.get("symbol") == symbol and r.get("signal_ts_ms") == key for r in rows):
+        return
+    t_utc = datetime.fromtimestamp(signal["timestamp"] / 1000, tz=timezone.utc)
+    t_pkt = t_utc + timedelta(hours=5)
+    crossed = signal.get("Crossed", [])
+    rows.append({
+        "signal_ts_ms": key,
+        "signal_time_utc": t_utc.strftime("%Y-%m-%d %H:%M"),
+        "signal_time_pkt": t_pkt.strftime("%Y-%m-%d %H:%M"),
+        "symbol": symbol,
+        "entry_close": f"{signal['close']:.10g}",
+        "tp_price": f"{tp_price:.10g}",
+        "sl_price": f"{sl_price:.10g}",
+        "open": f"{signal['open']:.10g}",
+        "volume": f"{signal['volume']:.2f}",
+        "vol_ratio": f"{signal['volume'] / signal['Volume_SMA9']:.2f}" if signal.get("Volume_SMA9") else "",
+        "body_pct": f"{(signal['close'] / signal['open'] - 1) * 100:.2f}",
+        "res_gap_pct": f"{signal['Res_gap_pct']:.2f}" if signal.get("Res_gap_pct") is not None else "",
+        "n_crossed": str(len(crossed)),
+        "crossed_levels": "+".join(crossed),
+        "status": "OPEN",
+    })
+    save_signal_log(rows)
+    print(f"📝 Signal log mein save: {symbol} {t_pkt.strftime('%Y-%m-%d %H:%M')} PKT")
+
+
+def _first_hit(after, entry):
+    """Entry ke baad pehli candle jis mein TP ya SL touch hua. Dono ek hi candle mein ho to SL maana jata hai."""
+    tp = entry * (1 + TP_PCT / 100.0)
+    sl = entry * (1 - SL_PCT / 100.0)
+    for k, c in enumerate(after, 1):
+        if c["low"] <= sl:
+            return "SL", k
+        if c["high"] >= tp:
+            return "TP", k
+    return None, None
+
+
+def update_signal_outcomes():
+    """Khule (OPEN) signals ka result bharta hai: TP pehle hit hua ya SL, aur price kitni upar/neeche gayi."""
+    if not ENABLE_SIGNAL_LOG:
+        return
+    rows = load_signal_log()
+    open_rows = [r for r in rows if r.get("status") != "DONE"]
+    if not open_rows:
+        return
+    cache = {}
+    changed = False
+    for r in open_rows:
+        sym = r["symbol"]
+        if sym not in cache:
+            cache[sym] = fetch_candles(sym)
+        candles = cache[sym]
+        if candles is None:
             continue
-        gap = (value - price) / price * 100.0
-        if gap <= 0:
-            rows.append((name, value, gap, True, "below"))   # price ke neeche: ignore
-            continue
-        ok = gap >= H1_MIN_GAP_PCT
-        rows.append((name, value, gap, ok, "above"))
-        if not ok:
-            all_pass = False
-
-    # Neeche: sirf Support. Support kam az kam H1_MIN_SUPPORT_GAP_PCT % door ho to PASS,
-    # qareeb ho ya toot chuki ho (price support se neeche) to FAIL
-    support = current.get("Support")
-    if support is None or price <= 0:
-        rows.append(("Support", None, None, False, "na"))
-        all_pass = False
-    else:
-        sup_gap = (price - support) / price * 100.0
-        ok = sup_gap >= H1_MIN_SUPPORT_GAP_PCT
-        rows.append(("Support", support, sup_gap, ok, "support"))
-        if not ok:
-            all_pass = False
-
-    return all_pass, rows, price
-
-
-def format_1h_rows(rows):
-    parts = []
-    for name, value, gap, ok, kind in rows:
-        if kind == "na":
-            parts.append(f"{name} NA ❌")
-        elif kind == "below":
-            parts.append(f"{name} neeche (ignore)")
-        elif kind == "above":
-            parts.append(f"{name} {gap:.2f}% upar {'✅' if ok else '❌'}")
-        elif gap >= 0:
-            parts.append(f"{name} {gap:.2f}% neeche {'✅' if ok else '❌'}")
+        sig_ts = int(r["signal_ts_ms"])
+        entry = float(r["entry_close"])
+        lost = sig_ts < candles[0]["timestamp"]            # signal candle ab data window se bahar
+        after = [c for c in candles if c["timestamp"] > sig_ts][:LOG_TRACK_CANDLES]
+        res, k = _first_hit(after, entry)
+        done = True
+        if res is not None:
+            r[RESULT_COL], r["hours_to_exit"] = res, f"{k * 0.25:.2f}"
+        elif lost:
+            r[RESULT_COL] = "UNKNOWN"
+        elif len(after) >= LOG_TRACK_CANDLES:
+            r[RESULT_COL] = "NONE"
         else:
-            parts.append(f"{name} toot gayi (price {abs(gap):.2f}% neeche) ❌")
-    return " | ".join(parts)
+            done = False
+        if after:
+            r["max_up_pct"] = f"{(max(c['high'] for c in after) / entry - 1) * 100:.2f}"
+            r["max_down_pct"] = f"{(1 - min(c['low'] for c in after) / entry) * 100:.2f}"
+        r["candles_tracked"] = str(len(after))
+        if done:
+            r["status"] = "DONE"
+        changed = True
+    if changed:
+        save_signal_log(rows)
+        n_done = sum(1 for r in rows if r.get("status") == "DONE")
+        print(f"📒 Signal log update: {len(rows)} signals, {n_done} mukammal")
 
 
-def format_1h_debug(rows):
-    """Debug log ke liye: har level ki value aur price se faasla (chart se milane ke liye)"""
-    parts = []
-    for name, value, gap, ok, kind in rows:
-        if kind == "na":
-            parts.append(f"{name}:NA")
-        elif kind == "below":
-            parts.append(f"{name}:{value:.5g}(neeche {abs(gap):.2f}% ignore)")
-        elif kind == "above":
-            parts.append(f"{name}:{value:.5g}(upar {gap:.2f}% {'OK' if ok else 'FAIL'})")
-        elif gap >= 0:
-            parts.append(f"{name}:{value:.5g}(neeche {gap:.2f}% {'OK' if ok else 'FAIL'})")
-        else:
-            parts.append(f"{name}:{value:.5g}(toot gayi, price {abs(gap):.2f}% neeche FAIL)")
-    return " | ".join(parts)
-
-
+# ============================== SCAN ==============================
 def scan_market():
     # Bitget candle close hone ke baad data fetch karne ke liye thora wait
     time.sleep(20)
 
     print("=" * 50)
-    print("BITGET SPOT - BULLISH BREAKOUT SCAN")
+    print("BITGET SPOT - 15m BULLISH CROSS SCAN")
     print("=" * 50)
+
+    # Pehle purane signals ke result (TP/SL) update karein
+    update_signal_outcomes()
 
     for symbol in SYMBOLS:
         candles = fetch_candles(symbol)
@@ -285,79 +328,51 @@ def scan_market():
         current = candles[index]
         signal = check_single_candle(candles, index)
 
-        # 1H data: DEBUG mein har coin ke liye (log dekhne ke liye), warna sirf 15m signal par
-        h1 = None
-        if ENABLE_1H_CONFIRMATION and (DEBUG or signal is not None):
-            h1 = check_1h_confirmation(symbol)
-
         if DEBUG:
             t = datetime.fromtimestamp(current["timestamp"] / 1000, tz=timezone.utc).strftime('%H:%M')
             sma = current["Volume_SMA9"]
             sma_str = f"{sma:.0f}" if sma is not None else "NA"
             res = current.get("Resistance")
-            sup = current.get("Support")
             gap = current.get("Res_gap_pct")
             res_str = f"{res:.5g}" if res is not None else "NA"
-            sup_str = f"{sup:.5g}" if sup is not None else "NA"
             gap_str = f"{gap:.2f}%" if gap is not None else "NA"
             print(
                 f"{symbol} {t}UTC O:{current['open']:.5g} C:{current['close']:.5g} "
                 f"EMA9:{current['EMA9']:.5g} EMA21:{current['EMA21']:.5g} "
                 f"VWAP:{current['VWAP']:.5g} Vol:{current['volume']:.0f} SMA9:{sma_str} "
-                f"Res:{res_str} Sup:{sup_str} Gap:{gap_str}"
+                f"Res:{res_str} Gap:{gap_str}"
             )
-            if ENABLE_1H_CONFIRMATION:
-                if h1 is None:
-                    print(f"   1H: data nahi mila")
-                else:
-                    h1_ok_dbg, h1_rows_dbg, h1_price_dbg = h1
-                    print(
-                        f"   1H [{'PASS' if h1_ok_dbg else 'FAIL'}] Price:{h1_price_dbg:.5g} "
-                        f"{format_1h_debug(h1_rows_dbg)}"
-                    )
 
-        if signal is not None:
-            time_str = datetime.fromtimestamp(signal["timestamp"] / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-            print(f"🎯 15m MATCHED: {symbol} at {time_str}")
-
-            # 15m signal ban gaya, ab 1H confirmation check karein
-            h1_line = ""
-            if ENABLE_1H_CONFIRMATION:
-                if h1 is None:
-                    # Sirf 1H ka data na milne par alert phir bhi jaye ga (warning ke saath)
-                    print(f"⚠️ {symbol}: 1H data nahi mila, 15m signal warning ke saath bheja ja raha hai")
-                    h1_line = (
-                        f"\n⚠️ <b>1H Confirmation:</b> 1H data nahi mila, check nahi ho saka. "
-                        f"Khud 1H chart dekh lein."
-                    )
-                else:
-                    h1_ok, h1_rows, _h1_price = h1
-                    h1_summary = format_1h_rows(h1_rows)
-                    if not h1_ok:
-                        # 1H check hua aur shart poori nahi hui -> alert nahi
-                        print(f"❌ {symbol}: 15m matched lekin 1H confirmation FAIL ({h1_summary})")
-                        continue
-                    print(f"✅ {symbol}: 1H confirmation PASS ({h1_summary})")
-                    h1_line = (
-                        f"\n⏱ <b>1H Confirmation:</b> ✅ (upar ki rukawatein {H1_MIN_GAP_PCT}%+ door, "
-                        f"support {H1_MIN_SUPPORT_GAP_PCT}%+ neeche)\n"
-                        f"   {h1_summary}"
-                    )
-
-            telegram_msg = (
-                f"🚨 <b>BULLISH BREAKOUT DETECTED</b>\n\n"
-                f"🪙 <b>Symbol:</b> #{symbol}\n"
-                f"🕐 <b>Candle Time:</b> {time_str}\n"
-                f"📊 <b>Open:</b> {signal['open']:.8g}\n"
-                f"🎯 <b>Close:</b> {signal['close']:.8g}\n"
-                f"🔥 <b>Volume:</b> {signal['volume']:.2f}\n"
-                f"🧱 <b>Resistance:</b> {signal['Resistance']:.8g} ({signal['Res_gap_pct']:.2f}% door)\n"
-                f"🛟 <b>Support:</b> {signal['Support']:.8g}"
-                f"{h1_line}"
-            )
-            send_telegram_message(telegram_msg)
-        else:
+        if signal is None:
             print(f"❌ {symbol}: Not Matched")
+            continue
+
+        t_utc = datetime.fromtimestamp(signal["timestamp"] / 1000, tz=timezone.utc)
+        time_str = t_utc.strftime('%Y-%m-%d %H:%M UTC')
+        pkt_str = (t_utc + timedelta(hours=5)).strftime('%H:%M PKT')
+        print(f"🎯 15m MATCHED: {symbol} at {time_str} (crossed: {'+'.join(signal['Crossed'])})")
+
+        entry = signal["close"]
+        tp_price = entry * (1 + TP_PCT / 100.0)
+        sl_price = entry * (1 - SL_PCT / 100.0)
+        vol_ratio = signal["volume"] / signal["Volume_SMA9"] if signal.get("Volume_SMA9") else 0.0
+        crossed = signal["Crossed"]
+        res_gap = signal["Res_gap_pct"]
+
+        telegram_msg = (
+            f"🚨 <b>BULLISH CROSS DETECTED (15m)</b>\n\n"
+            f"🪙 <b>Symbol:</b> #{symbol}\n"
+            f"🕐 <b>Candle Time:</b> {time_str} ({pkt_str})\n"
+            f"📊 <b>Open:</b> {signal['open']:.8g}\n"
+            f"🎯 <b>Close (Entry):</b> {entry:.8g}\n"
+            f"🔀 <b>Cross kiye:</b> {' + '.join(crossed)} ({len(crossed)}/3)\n"
+            f"🔥 <b>Volume:</b> {signal['volume']:.2f} ({vol_ratio:.2f}x SMA9)\n"
+            f"🧱 <b>Resistance:</b> {signal['Resistance']:.8g} ({res_gap:.2f}% door)\n\n"
+            f"✅ <b>TP (+{TP_PCT}%):</b> {tp_price:.8g}\n"
+            f"🛑 <b>SL (-{SL_PCT}%):</b> {sl_price:.8g}"
+        )
+        send_telegram_message(telegram_msg)
+        log_signal(symbol, signal, tp_price, sl_price)
 
 
 if __name__ == "__main__":
