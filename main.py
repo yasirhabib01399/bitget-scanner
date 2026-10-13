@@ -464,6 +464,35 @@ def _first_hit(after, entry, tp_pct, sl_pct):
     return None, None
 
 
+def notify_result(r, res, k, after, entry):
+    """TP ya SL pehli baar hit hone par Telegram message (candle band hone ke baad, agle run mein)."""
+    tp_price = entry * (1 + TP_PCT / 100.0)
+    sl_price = entry * (1 - SL_PCT / 100.0)
+    hit_candle = after[k - 1]
+    t_hit = datetime.fromtimestamp(hit_candle["timestamp"] / 1000, tz=timezone.utc) + timedelta(hours=5)
+    peak_so_far = _pct(max(c["high"] for c in after), entry)
+    low_so_far = (1 - min(c["low"] for c in after) / entry) * 100.0
+    if res == "TP":
+        head = f"✅ <b>TP HIT</b> #{r['symbol']}"
+        line = f"🎯 TP {tp_price:.8g} (+{TP_PCT}%) touch hua"
+    else:
+        head = f"🛑 <b>SL HIT</b> #{r['symbol']}"
+        line = f"🛑 SL {sl_price:.8g} (-{SL_PCT}%) touch hua"
+    both = hit_candle["low"] <= sl_price and hit_candle["high"] >= tp_price
+    note = ("\n⚠️ Isi candle mein TP aur SL dono touch hue, SL pehle maana gaya (asal mein pehle kaun hua, "
+            "chart se dekh lein)") if both else ""
+    msg = (
+        f"{head}\n\n"
+        f"🕐 <b>Signal:</b> {r['signal_time_pkt']} PKT\n"
+        f"🎯 <b>Entry (close):</b> {entry:.8g}\n"
+        f"{line}\n"
+        f"⏱ <b>Hit candle:</b> {t_hit.strftime('%Y-%m-%d %H:%M')} PKT ({k * 0.25:.2f} ghantay baad)\n"
+        f"📈 <b>Ab tak ki sab se oonchi price:</b> +{peak_so_far:.2f}%  |  📉 sab se neechi: -{low_so_far:.2f}%"
+        f"{note}"
+    )
+    send_telegram_message(msg)
+
+
 def update_signal_outcomes():
     """
     Khule (OPEN) signals ka result bharta hai. Har signal ko LOG_TRACK_CANDLES (~22 ghantay) tak dekhte hain:
@@ -503,7 +532,10 @@ def update_signal_outcomes():
         complete = len(after) >= LOG_TRACK_CANDLES
 
         # Asli TP/SL
+        prev_result = r.get("result", "")
         res, k = _first_hit(after, entry, TP_PCT, SL_PCT)
+        if res and prev_result not in ("TP", "SL"):
+            notify_result(r, res, k, after, entry)      # pehli baar hit hua: Telegram alert
         r["result"] = res if res else ("NONE" if complete else "")
         r["hours_to_exit"] = f"{k * 0.25:.2f}" if k else ""
         if k:
