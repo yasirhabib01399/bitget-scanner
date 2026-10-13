@@ -5,6 +5,15 @@ on:
     types: [run-scanner]
   workflow_dispatch:
 
+# NAYA: signals_log.csv ko repo mein wapas save karne ki ijazat
+permissions:
+  contents: write
+
+# NAYA: do runs ek saath na chalein (warna CSV save karte waqt takrao ho sakta hai)
+concurrency:
+  group: bitget-scanner
+  cancel-in-progress: false
+
 jobs:
   run-scanner:
     runs-on: ubuntu-latest
@@ -28,3 +37,17 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python main.py
+
+      # NAYA: signals_log.csv mein tabdeeli ho to usay repo mein save karo
+      - name: Save signals log
+        run: |
+          if [ -f signals_log.csv ] && [ -n "$(git status --porcelain signals_log.csv)" ]; then
+            git config user.name "scanner-bot"
+            git config user.email "scanner-bot@users.noreply.github.com"
+            git add signals_log.csv
+            git commit -m "Update signals_log.csv [skip ci]"
+            git pull --rebase origin "${GITHUB_REF_NAME}" || true
+            git push
+          else
+            echo "signals_log.csv mein koi tabdeeli nahi"
+          fi
