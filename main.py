@@ -199,6 +199,9 @@ def check_single_candle(candles, index):
 #   *_vol_x = us candle ka volume / us waqt ka volume SMA9 (2.0 = SMA9 se doguna)
 #   Liquidity sweep = candle ka low pichli N candles ke sab se neeche low se NEECHE gaya (stop-hunt) lekin
 #            close us low se UPAR aaya. 15m: N=15, 1H: N=10.
+# Waqt ke hisaab se peak: signal ke baad pehle 1/2/4/8 ghantay (= 4/8/16/32 candles) ke andar sab se oonchi/neechi price.
+# Column tabhi bharta hai jab wo poori muddat guzar jaye (warna adhoora number ghalat tasur deta).
+PEAK_HORIZONS = [(1, 4), (2, 8), (4, 16), (8, 32)]       # (ghantay, candles)
 RESULT_GRID_EXTRA = [(0.5, 0.4), (1.0, 0.4), (1.5, 0.4), (2.0, 0.4), (0.8, 0.3), (0.8, 0.6), (0.8, 0.8)]
 RESULT_GRID = [(g[0], g[1]) for g in RESULT_GRID_EXTRA if g != (TP_PCT, SL_PCT)]
 
@@ -210,7 +213,9 @@ def grid_col(tp, sl):
 def _log_fields():
     f = ["signal_time_pkt", "signal_time_utc", "symbol", "result", "hours_to_exit", "exit_time_pkt",
          "entry_close", "tp_price", "sl_price",
-         "peak_up_pct", "hours_to_peak", "peak_after_tp_extra_pct", "peak_down_pct",
+         "peak_up_pct", "hours_to_peak", "peak_after_tp_extra_pct", "peak_down_pct"]
+    f += [f"peak_up_{h}h_pct" for h, _ in PEAK_HORIZONS] + [f"peak_down_{h}h_pct" for h, _ in PEAK_HORIZONS]
+    f += [
          "mfe_before_exit_pct", "mae_before_exit_pct", "ret_1h_after_pct", "ret_4h_after_pct"]
     f += [grid_col(tp, sl) for tp, sl in RESULT_GRID]
     f += ["status", "candles_tracked",
@@ -553,6 +558,10 @@ def update_signal_outcomes():
         r["peak_up_pct"] = _num(_pct(peak, entry))
         r["hours_to_peak"] = f"{(highs.index(peak) + 1) * 0.25:.2f}"
         r["peak_down_pct"] = _num((1 - min(lows) / entry) * 100.0)
+        for h_, n_ in PEAK_HORIZONS:                       # sirf tab jab wo muddat poori guzar chuki ho
+            if len(after) >= n_:
+                r[f"peak_up_{h_}h_pct"] = _num(_pct(max(c["high"] for c in after[:n_]), entry))
+                r[f"peak_down_{h_}h_pct"] = _num((1 - min(c["low"] for c in after[:n_]) / entry) * 100.0)
         r["peak_after_tp_extra_pct"] = _num(_pct(peak, entry) - TP_PCT) if res == "TP" else ""
         upto = after[:k] if k else after                   # exit tak (ya ab tak)
         r["mfe_before_exit_pct"] = _num(_pct(max(c["high"] for c in upto), entry))
