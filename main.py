@@ -298,12 +298,17 @@ def btc_context(btc_candles, sig_ts):
     return out
 
 
+def _h1_candles(symbol, sig_ts):
+    """Live: Bitget se 1H candles. (backfill.py isko badal kar purani 1H candles deta hai.)"""
+    return fetch_candles(symbol, timeframe=H1_TIMEFRAME, candle_ms=H1_CANDLE_MS, only_completed=False)
+
+
 def h1_features(symbol, sig_ts, price):
     """
     1H chart ki wo candle jis mein signal candle aati hai (chalti ho to us waqt tak ki). Indicators 1H candles par.
     1H data na mile to khali dict (log mein khali columns).
     """
-    cs = fetch_candles(symbol, timeframe=H1_TIMEFRAME, candle_ms=H1_CANDLE_MS, only_completed=False)
+    cs = _h1_candles(symbol, sig_ts)
     if cs is None:
         return {}
     hs = (sig_ts // H1_CANDLE_MS) * H1_CANDLE_MS
@@ -498,6 +503,43 @@ def notify_result(r, res, k, after, entry):
     send_telegram_message(msg)
 
 
+def _fill_outcome(r, after, entry, complete, notify=True):
+    """Ek signal row mein result / grid / peaks / mfe-mae bharta hai. after = signal ke baad ki candles (max LOG_TRACK_CANDLES)."""
+    # Asli TP/SL
+    prev_result = r.get("result", "")
+    res, k = _first_hit(after, entry, TP_PCT, SL_PCT)
+    if notify and res and prev_result not in ("TP", "SL"):
+        notify_result(r, res, k, after, entry)      # pehli baar hit hua: Telegram alert
+    r["result"] = res if res else ("NONE" if complete else "")
+    r["hours_to_exit"] = f"{k * 0.25:.2f}" if k else ""
+    if k:
+        t0 = int(r["signal_ts_ms"]) + k * CANDLE_MS
+        r["exit_time_pkt"] = (datetime.fromtimestamp(t0 / 1000, tz=timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M")
+    # Baqi TP/SL jore
+    for tp, sl in RESULT_GRID:
+        g, _ = _first_hit(after, entry, tp, sl)
+        r[grid_col(tp, sl)] = g if g else ("NONE" if complete else "")
+
+    # Price kitni upar/neeche gayi (poori tracking muddat mein)
+    highs = [c["high"] for c in after]
+    lows = [c["low"] for c in after]
+    peak = max(highs)
+    r["peak_up_pct"] = _num(_pct(peak, entry))
+    r["hours_to_peak"] = f"{(highs.index(peak) + 1) * 0.25:.2f}"
+    r["peak_down_pct"] = _num((1 - min(lows) / entry) * 100.0)
+    for h_, n_ in PEAK_HORIZONS:                       # sirf tab jab wo muddat poori guzar chuki ho
+        if len(after) >= n_:
+            r[f"peak_up_{h_}h_pct"] = _num(_pct(max(c["high"] for c in after[:n_]), entry))
+            r[f"peak_down_{h_}h_pct"] = _num((1 - min(c["low"] for c in after[:n_]) / entry) * 100.0)
+    r["peak_after_tp_extra_pct"] = _num(_pct(peak, entry) - TP_PCT) if res == "TP" else ""
+    upto = after[:k] if k else after                   # exit tak (ya ab tak)
+    r["mfe_before_exit_pct"] = _num(_pct(max(c["high"] for c in upto), entry))
+    r["mae_before_exit_pct"] = _num((1 - min(c["low"] for c in upto) / entry) * 100.0)
+    r["ret_1h_after_pct"] = _num(_pct(after[3]["close"], entry)) if len(after) >= 4 else ""
+    r["ret_4h_after_pct"] = _num(_pct(after[15]["close"], entry)) if len(after) >= 16 else ""
+    r["candles_tracked"] = str(len(after))
+
+
 def update_signal_outcomes():
     """
     Khule (OPEN) signals ka result bharta hai. Har signal ko LOG_TRACK_CANDLES (~22 ghantay) tak dekhte hain:
@@ -536,39 +578,7 @@ def update_signal_outcomes():
             continue
         complete = len(after) >= LOG_TRACK_CANDLES
 
-        # Asli TP/SL
-        prev_result = r.get("result", "")
-        res, k = _first_hit(after, entry, TP_PCT, SL_PCT)
-        if res and prev_result not in ("TP", "SL"):
-            notify_result(r, res, k, after, entry)      # pehli baar hit hua: Telegram alert
-        r["result"] = res if res else ("NONE" if complete else "")
-        r["hours_to_exit"] = f"{k * 0.25:.2f}" if k else ""
-        if k:
-            t0 = int(r["signal_ts_ms"]) + k * CANDLE_MS
-            r["exit_time_pkt"] = (datetime.fromtimestamp(t0 / 1000, tz=timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M")
-        # Baqi TP/SL jore
-        for tp, sl in RESULT_GRID:
-            g, _ = _first_hit(after, entry, tp, sl)
-            r[grid_col(tp, sl)] = g if g else ("NONE" if complete else "")
-
-        # Price kitni upar/neeche gayi (poori tracking muddat mein)
-        highs = [c["high"] for c in after]
-        lows = [c["low"] for c in after]
-        peak = max(highs)
-        r["peak_up_pct"] = _num(_pct(peak, entry))
-        r["hours_to_peak"] = f"{(highs.index(peak) + 1) * 0.25:.2f}"
-        r["peak_down_pct"] = _num((1 - min(lows) / entry) * 100.0)
-        for h_, n_ in PEAK_HORIZONS:                       # sirf tab jab wo muddat poori guzar chuki ho
-            if len(after) >= n_:
-                r[f"peak_up_{h_}h_pct"] = _num(_pct(max(c["high"] for c in after[:n_]), entry))
-                r[f"peak_down_{h_}h_pct"] = _num((1 - min(c["low"] for c in after[:n_]) / entry) * 100.0)
-        r["peak_after_tp_extra_pct"] = _num(_pct(peak, entry) - TP_PCT) if res == "TP" else ""
-        upto = after[:k] if k else after                   # exit tak (ya ab tak)
-        r["mfe_before_exit_pct"] = _num(_pct(max(c["high"] for c in upto), entry))
-        r["mae_before_exit_pct"] = _num((1 - min(c["low"] for c in upto) / entry) * 100.0)
-        r["ret_1h_after_pct"] = _num(_pct(after[3]["close"], entry)) if len(after) >= 4 else ""
-        r["ret_4h_after_pct"] = _num(_pct(after[15]["close"], entry)) if len(after) >= 16 else ""
-        r["candles_tracked"] = str(len(after))
+        _fill_outcome(r, after, entry, complete, notify=True)
         if complete:
             r["status"] = "DONE"
         changed = True
