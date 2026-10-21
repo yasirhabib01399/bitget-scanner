@@ -1,2 +1,0 @@
-signal_ts_ms,signal_time_utc,signal_time_pkt,symbol,pattern,entry_close,entry_open,tp_pct,sl_pct,tp_price,sl_price,exit_price,exit_ts_ms,exit_time_pkt,result,bars_held,hours_to_exit,pnl_pct,status
-1792621800000.0,2026-10-21 22:30,2026-10-22 03:30,OPUSDT,P8,0.1297,,1.0,1.5,,,,,,,,,,PENDING
