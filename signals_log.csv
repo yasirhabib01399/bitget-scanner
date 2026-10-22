@@ -1,0 +1,2 @@
+signal_ts_ms,signal_time_utc,signal_time_pkt,symbol,pattern,entry_close,entry_open,tp_pct,sl_pct,tp_price,sl_price,tp_triggered,tp_trigger_ts,highest_seen,current_sl,bars_since_tp,exit_price,exit_ts_ms,exit_time_pkt,result,bars_held,hours_to_exit,mfe_pct,mae_pct,bars_to_mfe,bars_to_mae,pnl_pct,status
+1792701900000.0,2026-10-22 20:45,2026-10-23 01:45,TIAUSDT,P21-v5,0.5622,,1.5,2.0,,,0,,,,0,,,,,,,,,,,,PENDING
