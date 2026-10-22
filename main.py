@@ -6,12 +6,10 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
 
-# ─── TELEGRAM ───
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ENABLE_TELEGRAM = True
 
-# ─── CONFIG ───
 API_URL = "https://api.bitget.com/api/v2/spot/market/candles"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SIGNAL_LOG_FILE = "signals_log.csv"
@@ -25,6 +23,7 @@ TIME_STOP = 20
 COOLDOWN_BARS = 8
 FEE_PCT = 0.2
 
+# ⭐ NEW CSV FIELDS with MFE/MAE
 CSV_FIELDS = [
     "signal_ts_ms", "signal_time_utc", "signal_time_pkt", 
     "symbol", "pattern",
@@ -33,28 +32,20 @@ CSV_FIELDS = [
     "tp_price", "sl_price",
     "exit_price", "exit_ts_ms", "exit_time_pkt",
     "result", "bars_held", "hours_to_exit",
+    "mfe_pct", "mae_pct", "bars_to_mfe", "bars_to_mae",   # ⭐ NEW
     "pnl_pct", "status"
 ]
 
 def safe_int(val):
-    """Safe conversion to int (handles .0, empty, None)"""
     if val is None or val == "": return 0
-    try:
-        return int(float(val))
-    except (ValueError, TypeError):
-        return 0
+    try: return int(float(val))
+    except (ValueError, TypeError): return 0
 
 def safe_float(val, default=0.0):
-    """Safe conversion to float"""
     if val is None or val == "": return default
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return default
+    try: return float(val)
+    except (ValueError, TypeError): return default
 
-# ═══════════════════════════════════════════════════════════════════
-# HELPERS
-# ═══════════════════════════════════════════════════════════════════
 def send_telegram_message(message):
     if not ENABLE_TELEGRAM or not TELEGRAM_BOT_TOKEN:
         return
@@ -181,16 +172,26 @@ def can_open_trade(sym, sig_ts, existing_rows):
         return False
     return True
 
-def notify_result(sym, trade, result, exit_price, pnl_pct):
+def notify_result(sym, trade, result, exit_price, pnl_pct, mfe, mae):
     emoji = "✅" if result == "TP" else ("🛑" if result == "SL" else "⏱")
     pattern = trade.get('pattern', 'N/A')
+    
+    # MFE/MAE indicator
+    if result == "SL" and mfe > 0.5:
+        mfe_note = f"\n💡 (Price went +{mfe:.2f}% up first — BE could've helped)"
+    elif result == "TP" and mae < -0.5:
+        mfe_note = f"\n💡 (Dipped {mae:.2f}% first — tight SL would've killed this)"
+    else:
+        mfe_note = ""
+    
     msg = (
         f"{emoji} <b>{result} HIT</b> #{sym} ({pattern})\n"
         f"🕐 Signal: {trade['signal_time_pkt']} PKT\n"
         f"🎯 Entry: {safe_float(trade['entry_open']):.8g}\n"
         f"🚪 Exit: {exit_price:.8g}\n"
-        f"💰 P&L: <b>{pnl_pct:+.3f}%</b> (after 0.2% fee)\n"
-        f"⏱ Bars: {trade['bars_held']} ({trade['hours_to_exit']}h)"
+        f"💰 P&L: <b>{pnl_pct:+.3f}%</b>\n"
+        f"📊 MFE: +{mfe:.2f}% | MAE: {mae:.2f}%"
+        f"{mfe_note}"
     )
     send_telegram_message(msg)
 
@@ -237,9 +238,27 @@ def update_outcomes(coin_data, existing_rows):
         future_bars = df.iloc[idx+1 : idx+21]
         if len(future_bars) == 0: continue
         
+        # ⭐ NEW: Track MFE/MAE during trade
+        highest_price = entry
+        lowest_price = entry
+        bars_to_mfe = 0
+        bars_to_mae = 0
+        
         result, exit_ts, bars_held, exit_price = None, None, 0, None
         for i, (_, bar) in enumerate(future_bars.iterrows()):
             bars_held = i + 1
+            
+            # Update MFE (highest)
+            if bar['high'] > highest_price:
+                highest_price = bar['high']
+                bars_to_mfe = bars_held
+            
+            # Update MAE (lowest)
+            if bar['low'] < lowest_price:
+                lowest_price = bar['low']
+                bars_to_mae = bars_held
+            
+            # Check SL/TP
             if bar['low'] <= sl:
                 result, exit_ts, exit_price = "SL", bar['ts'], sl
                 break
@@ -254,6 +273,9 @@ def update_outcomes(coin_data, existing_rows):
             exit_price = future_bars.iloc[TIME_STOP - 1]['close']
             bars_held = TIME_STOP
         
+        # Calculate MFE/MAE %
+        mfe_pct = ((highest_price / entry) - 1) * 100
+        mae_pct = ((lowest_price / entry) - 1) * 100
         pnl_pct = ((exit_price / entry) - 1) * 100 - FEE_PCT
         
         r["result"] = result
@@ -263,16 +285,20 @@ def update_outcomes(coin_data, existing_rows):
         r["hours_to_exit"] = f"{bars_held * 0.25:.2f}"
         t_exit = datetime.fromtimestamp(exit_ts / 1000, tz=timezone.utc) + timedelta(hours=5)
         r["exit_time_pkt"] = t_exit.strftime("%Y-%m-%d %H:%M")
+        r["mfe_pct"] = f"{mfe_pct:+.3f}"          # ⭐ NEW
+        r["mae_pct"] = f"{mae_pct:+.3f}"          # ⭐ NEW
+        r["bars_to_mfe"] = str(bars_to_mfe)       # ⭐ NEW
+        r["bars_to_mae"] = str(bars_to_mae)       # ⭐ NEW
         r["pnl_pct"] = f"{pnl_pct:+.3f}"
         r["status"] = "DONE"
         updated = True
-        notify_result(sym, r, result, exit_price, pnl_pct)
+        notify_result(sym, r, result, exit_price, pnl_pct, mfe_pct, mae_pct)
     
     return updated
 
 def scan_market():
     print("="*50)
-    print("🚀 FINAL MEGA BOT SCANNER (P1 + P8) v3")
+    print("🚀 FINAL MEGA BOT SCANNER (P1 + P8) v4 — MFE/MAE")
     print("="*50)
     
     print("⏳ Waiting 45s for candle to finalize...")
@@ -322,6 +348,7 @@ def scan_market():
                 "tp_price": "", "sl_price": "",
                 "exit_price": "", "exit_ts_ms": "",
                 "exit_time_pkt": "", "bars_held": "", "hours_to_exit": "",
+                "mfe_pct": "", "mae_pct": "", "bars_to_mfe": "", "bars_to_mae": "",
                 "pnl_pct": "", "result": "", "status": "PENDING"
             }
             existing_rows.append(new_row)
@@ -333,8 +360,7 @@ def scan_market():
                 f"⏰ <b>Signal Time:</b> {t_pkt.strftime('%Y-%m-%d %H:%M')} PKT\n"
                 f"🎯 <b>Signal Close:</b> {sig['entry_close']:.8g}\n"
                 f"⏳ <b>Status:</b> PENDING (entry at next candle open)\n"
-                f"📊 <b>Est. TP:</b> +{sig['tp']}% | <b>SL:</b> -{sig['sl']}%\n"
-                f"\n✅ TP/SL will be confirmed on next scan."
+                f"📊 <b>Est. TP:</b> +{sig['tp']}% | <b>SL:</b> -{sig['sl']}%"
             )
             send_telegram_message(msg)
             print(f"🚨 SIGNAL: {sig['pattern']} {sym} @ {sig['entry_close']:.6g} (PENDING)")
