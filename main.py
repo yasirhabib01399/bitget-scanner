@@ -22,17 +22,21 @@ CANDLES_TO_CHECK = 3
 TIME_STOP = 20
 COOLDOWN_BARS = 8
 FEE_PCT = 0.2
+TRAIL_PCT = 0.3          # ⭐ TP trailing: 0.3% below highest
+MAX_BARS_AFTER_TP = 15   # ⭐ Max 15 bars (3.75 hours) after TP
 
-# ⭐ NEW CSV FIELDS with MFE/MAE
 CSV_FIELDS = [
     "signal_ts_ms", "signal_time_utc", "signal_time_pkt", 
     "symbol", "pattern",
     "entry_close", "entry_open",
     "tp_pct", "sl_pct",
     "tp_price", "sl_price",
+    "tp_triggered", "tp_trigger_ts",       # ⭐ NEW
+    "highest_seen", "current_sl",           # ⭐ NEW
+    "bars_since_tp",                        # ⭐ NEW
     "exit_price", "exit_ts_ms", "exit_time_pkt",
     "result", "bars_held", "hours_to_exit",
-    "mfe_pct", "mae_pct", "bars_to_mfe", "bars_to_mae",   # ⭐ NEW
+    "mfe_pct", "mae_pct", "bars_to_mfe", "bars_to_mae",
     "pnl_pct", "status"
 ]
 
@@ -47,8 +51,7 @@ def safe_float(val, default=0.0):
     except (ValueError, TypeError): return default
 
 def send_telegram_message(message):
-    if not ENABLE_TELEGRAM or not TELEGRAM_BOT_TOKEN:
-        return
+    if not ENABLE_TELEGRAM or not TELEGRAM_BOT_TOKEN: return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
@@ -125,11 +128,11 @@ def check_signals_at(symbol, df, idx):
     if symbol in SYMBOLS_P1:
         if (row['close'] < row['bb_lower'] and row['rsi'] < 32.0 and 
             row['close'] > row['ema200'] and row['adx'] < 50.0):
-            signals.append({"pattern": "P1", "tp": 1.2, "sl": 1.5, "ts": row['ts'], "entry_close": row['close']})
+            signals.append({"pattern": "P1", "tp": 1.2, "sl": 2.5, "ts": row['ts'], "entry_close": row['close']})
     if symbol in SYMBOLS_P8:
         if (row['close'] < row['kc_lower'] and row['rsi'] < 35.0 and 
             row['close'] > row['ema200'] and row['adx'] < 50.0):
-            signals.append({"pattern": "P8", "tp": 1.0, "sl": 1.5, "ts": row['ts'], "entry_close": row['close']})
+            signals.append({"pattern": "P8", "tp": 1.0, "sl": 2.5, "ts": row['ts'], "entry_close": row['close']})
     
     if not signals: return None
     return next((s for s in signals if s["pattern"] == "P1"), signals[0])
@@ -173,25 +176,36 @@ def can_open_trade(sym, sig_ts, existing_rows):
     return True
 
 def notify_result(sym, trade, result, exit_price, pnl_pct, mfe, mae):
-    emoji = "✅" if result == "TP" else ("🛑" if result == "SL" else "⏱")
+    emoji = "✅" if "TP" in result else ("🛑" if result == "SL" else "⏱")
     pattern = trade.get('pattern', 'N/A')
     
-    # MFE/MAE indicator
-    if result == "SL" and mfe > 0.5:
-        mfe_note = f"\n💡 (Price went +{mfe:.2f}% up first — BE could've helped)"
-    elif result == "TP" and mae < -0.5:
-        mfe_note = f"\n💡 (Dipped {mae:.2f}% first — tight SL would've killed this)"
+    if result == "TP_TRAIL":
+        note = "\n🔥 Trailing profit captured!"
+    elif result == "TP_TRAIL_TIMEOUT":
+        note = "\n⏱ Trailing timeout"
     else:
-        mfe_note = ""
+        note = ""
     
     msg = (
-        f"{emoji} <b>{result} HIT</b> #{sym} ({pattern})\n"
+        f"{emoji} <b>{result}</b> #{sym} ({pattern})\n"
         f"🕐 Signal: {trade['signal_time_pkt']} PKT\n"
         f"🎯 Entry: {safe_float(trade['entry_open']):.8g}\n"
         f"🚪 Exit: {exit_price:.8g}\n"
         f"💰 P&L: <b>{pnl_pct:+.3f}%</b>\n"
         f"📊 MFE: +{mfe:.2f}% | MAE: {mae:.2f}%"
-        f"{mfe_note}"
+        f"{note}"
+    )
+    send_telegram_message(msg)
+
+def notify_tp_trigger(sym, trade, highest, current_sl):
+    msg = (
+        f"🎯 <b>TP HIT → TRAILING</b> #{sym} ({trade['pattern']})\n"
+        f"🕐 Signal: {trade['signal_time_pkt']} PKT\n"
+        f"🎯 Entry: {safe_float(trade['entry_open']):.8g}\n"
+        f"📈 TP Level: {safe_float(trade['tp_price']):.8g}\n"
+        f"📊 Current High: {highest:.8g}\n"
+        f"🛡️ Trail SL: {current_sl:.8g} (locked +{((current_sl/safe_float(trade['entry_open']))-1)*100:.2f}%)\n"
+        f"\n💡 <b>Watching for more upside...</b>"
     )
     send_telegram_message(msg)
 
@@ -220,88 +234,112 @@ def update_outcomes(coin_data, existing_rows):
             if idx + 1 >= len(df): continue
             next_open = float(df.iloc[idx + 1]['open'])
             tp_pct = safe_float(r.get("tp_pct", 1.2))
-            sl_pct = safe_float(r.get("sl_pct", 1.5))
+            sl_pct = safe_float(r.get("sl_pct", 2.5))
             
             r["entry_open"] = f"{next_open:.10g}"
             r["tp_price"] = f"{next_open * (1 + tp_pct/100):.10g}"
             r["sl_price"] = f"{next_open * (1 - sl_pct/100):.10g}"
+            r["highest_seen"] = f"{next_open:.10g}"
+            r["current_sl"] = r["sl_price"]
             r["status"] = "OPEN"
             updated = True
         
-        if r["status"] != "OPEN": continue
-        
         entry = safe_float(r.get("entry_open", 0))
         tp = safe_float(r.get("tp_price", 0))
-        sl = safe_float(r.get("sl_price", 0))
-        if entry == 0 or tp == 0 or sl == 0: continue
+        orig_sl = safe_float(r.get("sl_price", 0))
+        if entry == 0 or tp == 0 or orig_sl == 0: continue
         
-        future_bars = df.iloc[idx+1 : idx+21]
+        # Re-simulate from entry bar
+        future_bars = df.iloc[idx+1 : idx+36]
         if len(future_bars) == 0: continue
         
-        # ⭐ NEW: Track MFE/MAE during trade
-        highest_price = entry
-        lowest_price = entry
-        bars_to_mfe = 0
-        bars_to_mae = 0
+        current_sl = orig_sl
+        highest = entry
+        tp_hit = False
+        tp_hit_bar = None
+        bars_held = 0
+        result = None
+        exit_ts = None
+        exit_price = None
+        was_tp_triggered = safe_int(r.get("tp_triggered", 0)) == 1
         
-        result, exit_ts, bars_held, exit_price = None, None, 0, None
         for i, (_, bar) in enumerate(future_bars.iterrows()):
             bars_held = i + 1
+            bar_ts = bar['ts']
+            bar_high = bar['high']
+            bar_low = bar['low']
+            bar_close = bar['close']
             
-            # Update MFE (highest)
-            if bar['high'] > highest_price:
-                highest_price = bar['high']
-                bars_to_mfe = bars_held
-            
-            # Update MAE (lowest)
-            if bar['low'] < lowest_price:
-                lowest_price = bar['low']
-                bars_to_mae = bars_held
-            
-            # Check SL/TP
-            if bar['low'] <= sl:
-                result, exit_ts, exit_price = "SL", bar['ts'], sl
-                break
-            if bar['high'] >= tp:
-                result, exit_ts, exit_price = "TP", bar['ts'], tp
-                break
+            if not tp_hit:
+                # OPEN state
+                if bar_low <= current_sl:
+                    result, exit_ts, exit_price = "SL", bar_ts, current_sl
+                    break
+                if bar_high >= tp:
+                    tp_hit = True
+                    tp_hit_bar = i
+                    highest = bar_high
+                    new_sl = highest * (1 - TRAIL_PCT/100)
+                    current_sl = max(tp, new_sl)
+                    # ⭐ Send TP trigger alert once
+                    if not was_tp_triggered:
+                        notify_tp_trigger(sym, r, highest, current_sl)
+                        was_tp_triggered = True
+                        r["tp_triggered"] = "1"
+                        r["tp_trigger_ts"] = str(int(bar_ts))
+                    continue
+                if bars_held >= TIME_STOP:
+                    result, exit_ts, exit_price = "TIMEOUT", bar_ts, bar_close
+                    break
+            else:
+                # TP_HIT state — trailing
+                bars_since = i - tp_hit_bar
+                highest = max(highest, bar_high)
+                new_sl = highest * (1 - TRAIL_PCT/100)
+                current_sl = max(current_sl, new_sl)
+                
+                if bar_low <= current_sl:
+                    result, exit_ts, exit_price = "TP_TRAIL", bar_ts, current_sl
+                    break
+                
+                if bars_since >= MAX_BARS_AFTER_TP:
+                    result, exit_ts, exit_price = "TP_TRAIL_TIMEOUT", bar_ts, bar_close
+                    break
         
-        if result is None:
-            if len(future_bars) < TIME_STOP: continue
-            result = "TIMEOUT"
-            exit_ts = future_bars.iloc[TIME_STOP - 1]['ts']
-            exit_price = future_bars.iloc[TIME_STOP - 1]['close']
-            bars_held = TIME_STOP
-        
-        # Calculate MFE/MAE %
-        mfe_pct = ((highest_price / entry) - 1) * 100
-        mae_pct = ((lowest_price / entry) - 1) * 100
-        pnl_pct = ((exit_price / entry) - 1) * 100 - FEE_PCT
-        
-        r["result"] = result
-        r["exit_price"] = f"{exit_price:.10g}"
-        r["exit_ts_ms"] = str(int(exit_ts))
-        r["bars_held"] = str(bars_held)
-        r["hours_to_exit"] = f"{bars_held * 0.25:.2f}"
-        t_exit = datetime.fromtimestamp(exit_ts / 1000, tz=timezone.utc) + timedelta(hours=5)
-        r["exit_time_pkt"] = t_exit.strftime("%Y-%m-%d %H:%M")
-        r["mfe_pct"] = f"{mfe_pct:+.3f}"          # ⭐ NEW
-        r["mae_pct"] = f"{mae_pct:+.3f}"          # ⭐ NEW
-        r["bars_to_mfe"] = str(bars_to_mfe)       # ⭐ NEW
-        r["bars_to_mae"] = str(bars_to_mae)       # ⭐ NEW
-        r["pnl_pct"] = f"{pnl_pct:+.3f}"
-        r["status"] = "DONE"
-        updated = True
-        notify_result(sym, r, result, exit_price, pnl_pct, mfe_pct, mae_pct)
+        if result:
+            pnl_pct = ((exit_price / entry) - 1) * 100 - FEE_PCT
+            r["result"] = result
+            r["exit_price"] = f"{exit_price:.10g}"
+            r["exit_ts_ms"] = str(int(exit_ts))
+            r["bars_held"] = str(bars_held)
+            r["hours_to_exit"] = f"{bars_held * 0.25:.2f}"
+            t_exit = datetime.fromtimestamp(exit_ts / 1000, tz=timezone.utc) + timedelta(hours=5)
+            r["exit_time_pkt"] = t_exit.strftime("%Y-%m-%d %H:%M")
+            r["pnl_pct"] = f"{pnl_pct:+.3f}"
+            r["status"] = "DONE"
+            # MFE/MAE
+            mfe_pct = ((highest / entry) - 1) * 100
+            r["mfe_pct"] = f"{mfe_pct:+.3f}"
+            r["highest_seen"] = f"{highest:.10g}"
+            r["current_sl"] = f"{current_sl:.10g}"
+            updated = True
+            notify_result(sym, r, result, exit_price, pnl_pct, mfe_pct, 0)
+        else:
+            # Still running — update state
+            r["highest_seen"] = f"{highest:.10g}"
+            r["current_sl"] = f"{current_sl:.10g}"
+            r["tp_triggered"] = "1" if tp_hit else "0"
+            r["bars_since_tp"] = str(bars_held - (tp_hit_bar + 1) if tp_hit else 0)
+            updated = True
     
     return updated
 
 def scan_market():
     print("="*50)
-    print("🚀 FINAL MEGA BOT SCANNER (P1 + P8) v4 — MFE/MAE")
+    print("🚀 MEGA BOT v5 — TP-TRAILING (0.3%)")
     print("="*50)
     
-    print("⏳ Waiting 45s for candle to finalize...")
+    print("⏳ Waiting 45s...")
     time.sleep(45)
     
     coin_data = {}
@@ -331,7 +369,7 @@ def scan_market():
             if key in seen_keys: continue
             
             if not can_open_trade(sym, sig['ts'], existing_rows):
-                print(f"⏸ {sym} skipped (cooldown or open trade)")
+                print(f"⏸ {sym} skipped")
                 continue
             
             t_utc = datetime.fromtimestamp(sig['ts'] / 1000, tz=timezone.utc)
@@ -346,6 +384,9 @@ def scan_market():
                 "entry_open": "",
                 "tp_pct": str(sig['tp']), "sl_pct": str(sig['sl']),
                 "tp_price": "", "sl_price": "",
+                "tp_triggered": "0", "tp_trigger_ts": "",
+                "highest_seen": "", "current_sl": "",
+                "bars_since_tp": "0",
                 "exit_price": "", "exit_ts_ms": "",
                 "exit_time_pkt": "", "bars_held": "", "hours_to_exit": "",
                 "mfe_pct": "", "mae_pct": "", "bars_to_mfe": "", "bars_to_mae": "",
@@ -355,15 +396,15 @@ def scan_market():
             seen_keys.add(key)
             
             msg = (
-                f"🚨 <b>{sig['pattern']} SIGNAL DETECTED</b>\n\n"
+                f"🚨 <b>{sig['pattern']} SIGNAL</b>\n\n"
                 f"🪙 <b>Symbol:</b> #{sym}\n"
-                f"⏰ <b>Signal Time:</b> {t_pkt.strftime('%Y-%m-%d %H:%M')} PKT\n"
-                f"🎯 <b>Signal Close:</b> {sig['entry_close']:.8g}\n"
-                f"⏳ <b>Status:</b> PENDING (entry at next candle open)\n"
-                f"📊 <b>Est. TP:</b> +{sig['tp']}% | <b>SL:</b> -{sig['sl']}%"
+                f"⏰ <b>Time:</b> {t_pkt.strftime('%Y-%m-%d %H:%M')} PKT\n"
+                f"🎯 <b>Entry:</b> {sig['entry_close']:.8g}\n"
+                f"📊 <b>TP:</b> +{sig['tp']}% | <b>SL:</b> -{sig['sl']}%\n"
+                f"\n🔥 <b>TP-Trail Mode:</b> After TP, trail at 0.3%"
             )
             send_telegram_message(msg)
-            print(f"🚨 SIGNAL: {sig['pattern']} {sym} @ {sig['entry_close']:.6g} (PENDING)")
+            print(f"🚨 SIGNAL: {sig['pattern']} {sym} @ {sig['entry_close']:.6g}")
             new_signals += 1
     
     if new_signals > 0:
