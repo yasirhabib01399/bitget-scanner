@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-# MEGA BOT v6 — P1 + P8 + P21-v5 + P21-v6 + TP-Trail 0.3%
+# MEGA BOT v7 — P1 + P8 + P21-v5 + P21-v6 + P22 (Base Breakout)
 # ═══════════════════════════════════════════════════════════════════
 import csv
 import os
@@ -24,14 +24,17 @@ P1_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT",
 
 P8_COINS = ["OPUSDT","ADAUSDT","SOLUSDT","LTCUSDT","ETHUSDT","SEIUSDT"]
 
-# P21 — OP & SEI dropped (negative per-coin in validation)
 P21_V5_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT",
                 "BNBUSDT","UNIUSDT","ARBUSDT","DOTUSDT",
                 "DOGEUSDT","TIAUSDT","ETHUSDT","SUIUSDT"]
 
 P21_V6_COINS = P21_V5_COINS   # same list
 
-ALL_SYMBOLS = list(set(P1_COINS + P8_COINS + P21_V5_COINS + P21_V6_COINS))
+# 🆕 P22 specific coins (based on 365d backtest)
+P22_COINS = ["TIAUSDT","ARBUSDT","APTUSDT","UNIUSDT","OPUSDT",
+             "DOTUSDT","SUIUSDT","SOLUSDT","ETHUSDT","NEARUSDT","ADAUSDT"]
+
+ALL_SYMBOLS = list(set(P1_COINS + P8_COINS + P21_V5_COINS + P21_V6_COINS + P22_COINS))
 
 # ─── Bot config ───
 CANDLES_TO_CHECK = 3
@@ -43,13 +46,18 @@ MAX_BARS_AFTER_TP = 15
 
 # P21 specific
 P21_TIME_STOP = 12
-P21_COOLDOWN = 8
 P21_TP = 1.5
 P21_SL = 2.0
 
+# 🆕 P22 specific (Optimized for DD < 15%)
+P22_TIME_STOP = 12
+P22_TP = 1.2
+P22_SL = 1.5
+
 # ─── Pattern priority (higher = fires first) ───
 # Dedup rule: same candle pe sirf highest priority pattern fire hoga
-PATTERN_PRIORITY = {"P1": 4, "P8": 3, "P21-v5": 2, "P21-v6": 1}
+# P22 gets 4 (just below P21-v5, above P21-v6)
+PATTERN_PRIORITY = {"P21-v5": 5, "P22": 4, "P21-v6": 3, "P1": 2, "P8": 1}
 
 CSV_FIELDS = [
     "signal_ts_ms", "signal_time_utc", "signal_time_pkt",
@@ -150,10 +158,16 @@ def add_indicators(df):
     df['bb_lower'] = df['bb_mid'] - (2.0 * df['bb_std'])
     df['atr20'] = calc_atr(df, 20)
     df['kc_lower'] = df['ema20'] - (2.0 * df['atr20'])
+    
     # P21 v2 indicators
     df['swing_low_20'] = df['low'].rolling(20).min().shift(1)
     df['vol_sma20'] = df['volume'].rolling(20).mean()
     df['vol_ratio'] = df['volume'] / df['vol_sma20'].replace(0, np.nan)
+    
+    # 🆕 P22 specific indicators
+    df['range_pct'] = (df['high'] - df['low']) / df['close'] * 100
+    df['prev_3_high'] = df['high'].rolling(3).max().shift(1)
+    df['dist_ema200'] = (df['close'] - df['ema200']) / df['ema200'] * 100
     return df
 
 
@@ -197,6 +211,36 @@ def check_p21_v6(df, idx):
     if r["vol_ratio"] < 1.2: return False
     return True
 
+# 🆕 P22 SIGNAL LOGIC
+def check_p22(df, idx):
+    if idx < 25: return False
+    r = df.iloc[idx]
+    if any(pd.isna(r[k]) for k in ["ema200","rsi","swing_low_20","vol_ratio","range_pct","prev_3_high"]): return False
+    
+    # 1. Recent Sweep (in last 10 bars)
+    recent_sweep = False
+    for k in range(idx-10, idx):
+        if df.iloc[k]["low"] < df.iloc[k]["swing_low_20"]:
+            recent_sweep = True; break
+    if not recent_sweep: return False
+    
+    # 2. Tight Consolidation (last 3 bars max range < 1.5%)
+    if df["range_pct"].iloc[idx-3:idx].max() >= 1.5: return False
+    
+    # 3. Breakout
+    if r["close"] <= r["prev_3_high"]: return False
+    
+    # 4. Volume Confirmation
+    if r["vol_ratio"] < 1.5: return False
+    
+    # 5. RSI Filter
+    if r["rsi"] >= 50 or r["rsi"] <= 30: return False
+    
+    # 6. Trend Filter
+    if r["dist_ema200"] < -15: return False
+    
+    return True
+
 
 def check_signals_at(symbol, df, idx):
     """Returns single signal with highest priority, or None."""
@@ -223,6 +267,12 @@ def check_signals_at(symbol, df, idx):
     if symbol in P21_V6_COINS and check_p21_v6(df, idx):
         candidates.append({"pattern":"P21-v6", "tp":P21_TP, "sl":P21_SL,
                            "time_stop":P21_TIME_STOP,
+                           "ts":row['ts'], "entry_close":row['close']})
+
+    # 🆕 P22 Candidate
+    if symbol in P22_COINS and check_p22(df, idx):
+        candidates.append({"pattern":"P22", "tp":P22_TP, "sl":P22_SL,
+                           "time_stop":P22_TIME_STOP,
                            "ts":row['ts'], "entry_close":row['close']})
 
     if not candidates: return None
@@ -359,7 +409,12 @@ def update_outcomes(coin_data, existing_rows):
 
         # Pattern-specific time stop
         pattern = r.get("pattern", "P1")
-        time_stop = P21_TIME_STOP if pattern.startswith("P21") else TIME_STOP
+        if pattern.startswith("P21"):
+            time_stop = P21_TIME_STOP
+        elif pattern == "P22":
+            time_stop = P22_TIME_STOP
+        else:
+            time_stop = TIME_STOP
 
         future_bars = df.iloc[idx+1 : idx+time_stop+2]
         if len(future_bars) == 0: continue
@@ -450,10 +505,10 @@ def update_outcomes(coin_data, existing_rows):
 
 def scan_market():
     print("="*50)
-    print("🚀 MEGA BOT v6 — P1 + P8 + P21-v5 + P21-v6")
+    print("🚀 MEGA BOT v7 — P1 + P8 + P21-v5 + P21-v6 + P22")
     print("="*50)
     print(f"   Coins: {len(ALL_SYMBOLS)}")
-    print(f"   P1: {len(P1_COINS)} | P8: {len(P8_COINS)} | P21-v5: {len(P21_V5_COINS)} | P21-v6: {len(P21_V6_COINS)}")
+    print(f"   P1: {len(P1_COINS)} | P8: {len(P8_COINS)} | P21-v5: {len(P21_V5_COINS)} | P21-v6: {len(P21_V6_COINS)} | P22: {len(P22_COINS)}")
 
     print("⏳ Waiting 45s...")
     time.sleep(45)
