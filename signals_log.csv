@@ -1,2 +1,2 @@
 signal_ts_ms,signal_time_utc,signal_time_pkt,symbol,pattern,entry_close,entry_open,tp_pct,sl_pct,tp_price,sl_price,tp_triggered,tp_trigger_ts,highest_seen,current_sl,bars_since_tp,exit_price,exit_ts_ms,exit_time_pkt,result,bars_held,hours_to_exit,mfe_pct,mae_pct,bars_to_mfe,bars_to_mae,pnl_pct,status
-1792786500000.0,2026-10-23 20:15,2026-10-24 01:15,NEARUSDT,P21-v5,4.772,4.772,1.5,2.0,4.84358,4.67656,0,,4.772,4.67656,0,,,,,,,,-0.838,,,,OPEN
+1792786500000.0,2026-10-23 20:15,2026-10-24 01:15,NEARUSDT,P21-v5,4.772,4.772,1.5,2.0,4.84358,4.67656,0,,4.772,4.67656,0,4.67656,1792794600000,2026-10-24 03:30,SL,9,2.25,+0.000,-2.242,,,-2.200,DONE
