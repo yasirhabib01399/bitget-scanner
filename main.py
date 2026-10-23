@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-# MEGA BOT v9 — P1 + P8 + P21-v5 + P21-v6 + P22 + P23 + P25
+# MEGA BOT v10 — P1 + P8 + P21-v5 + P21-v6 + P23 + P25 (P22 REMOVED)
 # ═══════════════════════════════════════════════════════════════════
 import csv
 import os
@@ -26,15 +26,13 @@ P21_V5_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT",
                 "BNBUSDT","UNIUSDT","ARBUSDT","DOTUSDT",
                 "DOGEUSDT","TIAUSDT","ETHUSDT","SUIUSDT"]
 P21_V6_COINS = P21_V5_COINS
-P22_COINS = ["TIAUSDT","ARBUSDT","APTUSDT","UNIUSDT","OPUSDT",
-             "DOTUSDT","SUIUSDT","SOLUSDT","ETHUSDT","NEARUSDT","ADAUSDT"]
+# 🆕 P22 REMOVED
 P23_COINS = ["DOTUSDT", "SOLUSDT", "NEARUSDT"]
-# 🆕 P25 Coins (Momentum Continuation)
 P25_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT",
              "BNBUSDT","UNIUSDT","APTUSDT","ARBUSDT","DOTUSDT",
              "DOGEUSDT","TIAUSDT","OPUSDT","ETHUSDT","SEIUSDT"]
 
-ALL_SYMBOLS = list(set(P1_COINS + P8_COINS + P21_V5_COINS + P21_V6_COINS + P22_COINS + P23_COINS + P25_COINS))
+ALL_SYMBOLS = list(set(P1_COINS + P8_COINS + P21_V5_COINS + P21_V6_COINS + P23_COINS + P25_COINS))
 
 # ─── Bot config ───
 CANDLES_TO_CHECK = 3
@@ -48,19 +46,15 @@ MAX_BARS_AFTER_TP = 15
 P21_TIME_STOP = 12
 P21_TP = 1.5
 P21_SL = 2.0
-P22_TIME_STOP = 12
-P22_TP = 1.2
-P22_SL = 1.5
 P23_TIME_STOP = 12
 P23_TP = 1.2
 P23_SL = 1.2
-# 🆕 P25 Config
 P25_TIME_STOP = 12
 P25_TP = 1.2
 P25_SL = 1.5
 
-# Priority
-PATTERN_PRIORITY = {"P21-v5": 7, "P22": 6, "P25": 5, "P21-v6": 4, "P23": 3, "P1": 2, "P8": 1}
+# Priority: P21-v5 > P25 > P21-v6 > P23 > P1 > P8
+PATTERN_PRIORITY = {"P21-v5": 6, "P25": 5, "P21-v6": 4, "P23": 3, "P1": 2, "P8": 1}
 
 CSV_FIELDS = [
     "signal_ts_ms", "signal_time_utc", "signal_time_pkt",
@@ -147,8 +141,6 @@ def add_indicators(df):
     df['swing_low_20'] = df['low'].rolling(20).min().shift(1)
     df['vol_sma20'] = df['volume'].rolling(20).mean()
     df['vol_ratio'] = df['volume'] / df['vol_sma20'].replace(0, np.nan)
-    df['range_pct'] = (df['high'] - df['low']) / df['close'] * 100
-    df['prev_3_high'] = df['high'].rolling(3).max().shift(1)
     df['dist_ema200'] = (df['close'] - df['ema200']) / df['ema200'] * 100
     return df
 
@@ -172,15 +164,6 @@ def check_p21_v6(df, idx):
     if any(pd.isna(r[k]) for k in ["rsi14","swing_low_20","vol_ratio"]): return False
     return ((r["low"] < r["swing_low_20"]) and (r["close"] > r["swing_low_20"]) and (r["close"] > r["open"]) and (r["close"] > prev["high"]) and (r["rsi14"] < 40) and (r["vol_ratio"] >= 1.2))
 
-def check_p22(df, idx):
-    if idx < 25: return False
-    r = df.iloc[idx]
-    if any(pd.isna(r[k]) for k in ["ema200","rsi14","swing_low_20","vol_ratio","range_pct","prev_3_high"]): return False
-    recent_sweep = False
-    for k in range(idx-10, idx):
-        if df.iloc[k]["low"] < df.iloc[k]["swing_low_20"]: recent_sweep = True; break
-    return (recent_sweep and df["range_pct"].iloc[idx-3:idx].max() < 1.5 and r["close"] > r["prev_3_high"] and r["vol_ratio"] >= 1.5 and 30 < r["rsi14"] < 50 and r["dist_ema200"] > -15)
-
 def check_p23(df, idx):
     if idx < 1: return False
     r = df.iloc[idx]; p = df.iloc[idx-1]
@@ -188,20 +171,16 @@ def check_p23(df, idx):
     if any(pd.isna(p[k]) for k in ["rsi2"]): return False
     return (r['close'] > r['ema200'] and r['close'] > r['ema50'] and r['adx'] < 25.0 and p['rsi2'] < 25.0 and r['close'] > r['open'] and r['close'] > p['high'] and r['bb_pos'] > 0.2 and r['rsi14'] > 40.0 and r['vol_ratio'] > 0.5)
 
-# 🆕 P25 Logic (Momentum Continuation)
 def check_p25(df, idx):
     r = df.iloc[idx]
     if any(pd.isna(r[k]) for k in ["rsi14", "rsi2", "adx", "bb_pos", "vol_ratio", "dist_ema200"]): return False
-    
-    # Signature: ADX > 30, RSI14 > 55, dist_ema200 > 2, RSI2 < 40, BB_pos > 0.5
     if r['adx'] < 30.0: return False
     if r['rsi14'] < 55.0: return False
     if r['dist_ema200'] < 2.0 or r['dist_ema200'] > 10.0: return False
     if r['rsi2'] > 40.0: return False
     if r['bb_pos'] < 0.5: return False
     if r['vol_ratio'] < 0.8: return False
-    if r['close'] <= r['open']: return False # Green candle
-    
+    if r['close'] <= r['open']: return False
     return True
 
 def check_signals_at(symbol, df, idx):
@@ -213,7 +192,7 @@ def check_signals_at(symbol, df, idx):
     if symbol in P8_COINS and check_p8(row): candidates.append({"pattern":"P8", "tp":1.0, "sl":2.5, "time_stop":TIME_STOP, "ts":row['ts'], "entry_close":row['close']})
     if symbol in P21_V5_COINS and check_p21_v5(df, idx): candidates.append({"pattern":"P21-v5", "tp":P21_TP, "sl":P21_SL, "time_stop":P21_TIME_STOP, "ts":row['ts'], "entry_close":row['close']})
     if symbol in P21_V6_COINS and check_p21_v6(df, idx): candidates.append({"pattern":"P21-v6", "tp":P21_TP, "sl":P21_SL, "time_stop":P21_TIME_STOP, "ts":row['ts'], "entry_close":row['close']})
-    if symbol in P22_COINS and check_p22(df, idx): candidates.append({"pattern":"P22", "tp":P22_TP, "sl":P22_SL, "time_stop":P22_TIME_STOP, "ts":row['ts'], "entry_close":row['close']})
+    # P22 REMOVED
     if symbol in P23_COINS and check_p23(df, idx): candidates.append({"pattern":"P23", "tp":P23_TP, "sl":P23_SL, "time_stop":P23_TIME_STOP, "ts":row['ts'], "entry_close":row['close']})
     if symbol in P25_COINS and check_p25(df, idx): candidates.append({"pattern":"P25", "tp":P25_TP, "sl":P25_SL, "time_stop":P25_TIME_STOP, "ts":row['ts'], "entry_close":row['close']})
 
@@ -283,7 +262,7 @@ def update_outcomes(coin_data, existing_rows):
         if entry == 0 or tp == 0 or orig_sl == 0: continue
 
         pattern = r.get("pattern", "P1")
-        time_stop = P21_TIME_STOP if pattern.startswith("P21") else (P22_TIME_STOP if pattern == "P22" else (P23_TIME_STOP if pattern == "P23" else (P25_TIME_STOP if pattern == "P25" else TIME_STOP)))
+        time_stop = P21_TIME_STOP if pattern.startswith("P21") else (P23_TIME_STOP if pattern == "P23" else (P25_TIME_STOP if pattern == "P25" else TIME_STOP))
         future_bars = df.iloc[idx+1 : idx+time_stop+2]
         if len(future_bars) == 0: continue
 
@@ -322,7 +301,7 @@ def update_outcomes(coin_data, existing_rows):
 
 def scan_market():
     print("="*50)
-    print("🚀 MEGA BOT v9 — P1 + P8 + P21 + P22 + P23 + P25")
+    print("🚀 MEGA BOT v10 — P1 + P8 + P21 + P23 + P25 (P22 removed)")
     print("="*50)
     print("⏳ Waiting 45s...")
     time.sleep(45)
