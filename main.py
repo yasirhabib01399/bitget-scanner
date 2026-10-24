@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-# MEGA BOT v11 — P1 + P8 + P21-v5 + P21-v6 + P23 + P25 + P27 + P28-Refined
+# MEGA BOT v11.1 — P1 + P8 + P21-v5 + P21-v6 + P23 + P25 + P27 + P28
 # ═══════════════════════════════════════════════════════════════════
 import csv
 import os
@@ -42,14 +42,14 @@ P25_TIME_STOP = 12; P25_TP = 1.2; P25_SL = 1.5
 P27_TIME_STOP = 15; P27_TP = 1.5; P27_SL = 1.5
 P28_TIME_STOP = 15; P28_TP = 1.5; P28_SL = 1.5
 
-# Priority: P21-v5 > P25 > P27 > P28 > P21-v6 > P23 > P1 > P8
 PATTERN_PRIORITY = {"P21-v5": 8, "P25": 7, "P27": 6, "P28": 5, "P21-v6": 4, "P23": 3, "P1": 2, "P8": 1}
 
+# 🆕 UPDATED CSV FIELDS
 CSV_FIELDS = [
     "signal_ts_ms", "signal_time_utc", "signal_time_pkt", "symbol", "pattern", "entry_close", "entry_open", 
     "tp_pct", "sl_pct", "tp_price", "sl_price", "tp_triggered", "tp_trigger_ts", "highest_seen", "current_sl", 
     "bars_since_tp", "exit_price", "exit_ts_ms", "exit_time_pkt", "result", "bars_held", "hours_to_exit", 
-    "mfe_pct", "mae_pct", "bars_to_mfe", "bars_to_mae", "pnl_pct", "status"
+    "mfe_pct", "mae_pct", "bars_to_mfe", "bars_to_mae", "tp_hit_price", "tp_hit_bar", "pnl_pct", "status"
 ]
 
 def safe_int(v):
@@ -217,13 +217,33 @@ def update_outcomes(coin_data, rows):
         csl, hi, tp_hit, tp_bar, held, res, xt, xp, mae = osl, entry, False, None, 0, None, None, None, 0.0
         wt = safe_int(r.get("tp_triggered", 0)) == 1
         
+        # 🆕 NEW TRACKING VARIABLES
+        lowest_price = entry
+        bars_to_mfe = 0
+        bars_to_mae = 0
+        
         for i, (_, b) in enumerate(fb.iterrows()):
             held = i + 1; bts, bh, bl, bc = b['ts'], b['high'], b['low'], b['close']
+            
+            # 🆕 MFE / MAE BAR TRACKING
+            if bh > hi:
+                hi = bh
+                bars_to_mfe = held
+            if bl < lowest_price:
+                lowest_price = bl
+                bars_to_mae = held
+                
             if ((bl / entry) - 1) * 100 < mae: mae = ((bl / entry) - 1) * 100
+            
             if not tp_hit:
                 if bl <= csl: res, xt, xp = "SL", bts, csl; break
                 if bh >= tp:
                     tp_hit = True; tp_bar = i; hi = bh; csl = max(tp, hi * (1 - TRAIL_PCT/100))
+                    
+                    # 🆕 SAVE TP TRIGGER DETAILS
+                    r["tp_hit_price"] = f"{tp:.10g}"
+                    r["tp_hit_bar"] = str(held)
+                    
                     if not wt: notify_tp_trigger(sym, r, hi, csl); wt = True; r["tp_triggered"] = "1"; r["tp_trigger_ts"] = str(int(bts))
                     continue
                 if held >= ts: res, xt, xp = "TIMEOUT", bts, bc; break
@@ -238,17 +258,33 @@ def update_outcomes(coin_data, rows):
             r["hours_to_exit"] = f"{held * 0.25:.2f}"
             r["exit_time_pkt"] = (datetime.fromtimestamp(xt/1000, tz=timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M")
             r["pnl_pct"] = f"{pnl:+.3f}"; r["status"] = "DONE"
+            
+            # 🆕 CALCULATE FINAL MFE / MAE
             mfe = ((hi / entry) - 1) * 100
-            r["mfe_pct"] = f"{mfe:+.3f}"; r["mae_pct"] = f"{mae:+.3f}"; r["highest_seen"] = f"{hi:.10g}"; r["current_sl"] = f"{csl:.10g}"
-            updated = True; notify_res(sym, r, res, xp, pnl, mfe, mae)
+            mae_final = ((lowest_price / entry) - 1) * 100
+            r["mfe_pct"] = f"{mfe:+.3f}"; r["mae_pct"] = f"{mae_final:+.3f}" 
+            r["bars_to_mfe"] = str(bars_to_mfe)
+            r["bars_to_mae"] = str(bars_to_mae)
+            r["highest_seen"] = f"{hi:.10g}"; r["current_sl"] = f"{csl:.10g}"
+            
+            updated = True; notify_res(sym, r, res, xp, pnl, mfe, mae_final)
         else:
+            # Even if open, save current state (helps if bot crashes)
             r["highest_seen"] = f"{hi:.10g}"; r["current_sl"] = f"{csl:.10g}"; r["tp_triggered"] = "1" if tp_hit else "0"
             r["bars_since_tp"] = str(held - (tp_bar + 1) if tp_hit else 0); r["mae_pct"] = f"{mae:+.3f}"; updated = True
+            
+            # 🆕 PARTIAL MFE / MAE SAVE
+            mfe = ((hi / entry) - 1) * 100
+            mae_final = ((lowest_price / entry) - 1) * 100
+            r["mfe_pct"] = f"{mfe:+.3f}"; r["mae_pct"] = f"{mae_final:+.3f}" 
+            r["bars_to_mfe"] = str(bars_to_mfe)
+            r["bars_to_mae"] = str(bars_to_mae)
+
     return updated
 
 def scan_market():
     print("="*50)
-    print("🚀 MEGA BOT v11 — 8 Patterns (P27 + P28 Added)")
+    print("🚀 MEGA BOT v11.1 — 8 Patterns (Fixed CSV)")
     print("="*50)
     print("⏳ Waiting 45s..."); time.sleep(45)
 
@@ -273,13 +309,17 @@ def scan_market():
 
             tu = datetime.fromtimestamp(sig['ts_ms'] / 1000, tz=timezone.utc)
             tp = tu + timedelta(hours=5)
+            
+            # 🆕 UPDATED NEW ROW (Added tp_hit_price and tp_hit_bar)
             nr = {
                 "signal_ts_ms": str(sig['ts_ms']), "signal_time_utc": tu.strftime("%Y-%m-%d %H:%M"), "signal_time_pkt": tp.strftime("%Y-%m-%d %H:%M"),
                 "symbol": sym, "pattern": sig['pattern'], "entry_close": f"{sig['entry']:.10g}", "entry_open": "",
                 "tp_pct": str(sig['tp']), "sl_pct": str(sig['sl']), "tp_price": "", "sl_price": "",
                 "tp_triggered": "0", "tp_trigger_ts": "", "highest_seen": "", "current_sl": "", "bars_since_tp": "0",
                 "exit_price": "", "exit_ts_ms": "", "exit_time_pkt": "", "bars_held": "", "hours_to_exit": "",
-                "mfe_pct": "", "mae_pct": "", "bars_to_mfe": "", "bars_to_mae": "", "pnl_pct": "", "result": "", "status": "PENDING"
+                "mfe_pct": "", "mae_pct": "", "bars_to_mfe": "", "bars_to_mae": "", 
+                "tp_hit_price": "", "tp_hit_bar": "", 
+                "pnl_pct": "", "result": "", "status": "PENDING"
             }
             rows.append(nr); seen.add((sym, sig['ts_ms']))
             sig["symbol"] = sym
