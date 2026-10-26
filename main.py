@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-# MEGA BOT v13 — 8 Patterns + ML (P29-ML)
+# MEGA BOT v14 — 8 Rules + P29-ML + P30-DL (CNN+LSTM)
 # ═══════════════════════════════════════════════════════════════════
 import csv
 import os
@@ -9,13 +9,21 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
 
-# 🆕 ML Imports
+# ─── ML/DL Imports ───
 try:
     import joblib
     HAS_ML = True
 except ImportError:
     HAS_ML = False
-    print("⚠️ joblib not found — ML disabled")
+    print("⚠️ joblib not found")
+
+try:
+    import tensorflow as tf
+    tf.get_logger().setLevel('ERROR')
+    HAS_DL = True
+except ImportError:
+    HAS_DL = False
+    print("⚠️ TensorFlow not found — DL disabled")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -35,12 +43,18 @@ if HAS_ML:
             ML_MODEL = ml_data["model"]
             ML_FEATURES = ml_data["features"]
             print(f"✅ ML Model loaded: {len(ML_FEATURES)} features")
-        else:
-            print("⚠️ ml_model.pkl not found")
-    except Exception as e:
-        print(f"⚠️ ML load error: {e}")
+    except Exception as e: print(f"⚠️ ML load error: {e}")
 
-# ─── Coin lists ───
+# ─── Load DL Model ───
+DL_MODEL = None
+if HAS_DL:
+    try:
+        if os.path.exists("ml_dl_model.h5"):
+            DL_MODEL = tf.keras.models.load_model("ml_dl_model.h5", compile=False)
+            print("✅ DL Model loaded")
+    except Exception as e: print(f"⚠️ DL load error: {e}")
+
+# ─── Coin Lists ───
 P1_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT","BNBUSDT","UNIUSDT","APTUSDT","ARBUSDT","DOTUSDT","DOGEUSDT","TIAUSDT"]
 P8_COINS = ["OPUSDT","ADAUSDT","SOLUSDT","LTCUSDT","ETHUSDT","SEIUSDT"]
 P21_V5_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT","BNBUSDT","UNIUSDT","ARBUSDT","DOTUSDT","DOGEUSDT","TIAUSDT","ETHUSDT","SUIUSDT"]
@@ -50,8 +64,9 @@ P25_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT","BNBUSDT","UNIUS
 P27_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT","BNBUSDT","UNIUSDT","APTUSDT","ARBUSDT","DOTUSDT","DOGEUSDT","TIAUSDT","OPUSDT","ETHUSDT","SEIUSDT"]
 P28_COINS = ["UNIUSDT", "ETHUSDT", "SEIUSDT", "SOLUSDT"]
 P29_COINS = ["ETHUSDT", "LTCUSDT", "APTUSDT", "DOGEUSDT", "SOLUSDT", "OPUSDT", "ARBUSDT", "ADAUSDT", "UNIUSDT"]
+P30_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT","BNBUSDT","UNIUSDT","APTUSDT","ARBUSDT","DOTUSDT","DOGEUSDT","TIAUSDT","OPUSDT","ETHUSDT","SEIUSDT"]
 
-ALL_SYMBOLS = list(set(P1_COINS + P8_COINS + P21_V5_COINS + P21_V6_COINS + P23_COINS + P25_COINS + P27_COINS + P28_COINS + P29_COINS))
+ALL_SYMBOLS = list(set(P1_COINS + P8_COINS + P21_V5_COINS + P21_V6_COINS + P23_COINS + P25_COINS + P27_COINS + P28_COINS + P29_COINS + P30_COINS))
 
 # ─── Config ───
 CANDLES_TO_CHECK = 3
@@ -66,12 +81,13 @@ P23_TIME_STOP = 12; P23_TP = 1.2; P23_SL = 1.2
 P25_TIME_STOP = 12; P25_TP = 1.2; P25_SL = 1.5
 P27_TIME_STOP = 15; P27_TP = 1.5; P27_SL = 1.5
 P28_TIME_STOP = 15; P28_TP = 1.5; P28_SL = 1.5
-# 🆕 P29 ML Config
 P29_TIME_STOP = 40; P29_TP = 2.5; P29_SL = 2.0
 P29_ML_THRESHOLD = 0.60
+P30_TIME_STOP = 25; P30_TP = 1.5; P30_SL = 1.5
+P30_DL_THRESHOLD = 0.65
+SEQ_LEN = 20
 
-# 🆕 Priority (P29 Highest)
-PATTERN_PRIORITY = {"P29-ML": 10, "P21-v5": 8, "P25": 7, "P27": 6, "P28": 5, "P21-v6": 4, "P23": 3, "P1": 2, "P8": 1}
+PATTERN_PRIORITY = {"P30-DL": 11, "P29-ML": 10, "P21-v5": 8, "P25": 7, "P27": 6, "P28": 5, "P21-v6": 4, "P23": 3, "P1": 2, "P8": 1}
 
 CSV_FIELDS = [
     "signal_ts_ms", "signal_time_utc", "signal_time_pkt", "symbol", "pattern", "entry_close", "entry_open", 
@@ -90,7 +106,7 @@ def safe_float(v, d=0.0):
 def send_telegram_message(msg):
     if not ENABLE_TELEGRAM or not TELEGRAM_BOT_TOKEN: return
     try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
-    except Exception as e: print(f"❌ Telegram Error: {e}")
+    except: pass
 
 def fetch_candles(sym):
     try:
@@ -145,30 +161,24 @@ def add_indicators(df, btc_df=None):
     df['bb_pos'] = (c - df['bb_lower']) / (df['bb_upper'] - df['bb_lower']).replace(0, np.nan)
     
     df['kc_lower'] = df['ema20'] - 2.0*calc_atr(df, 20)
-    
+    df['swing_low_20'] = l.rolling(20).min().shift(1)
     df['vol_sma20'] = df['volume'].rolling(20).mean(); df['vol_ratio'] = df['volume'] / df['vol_sma20'].replace(0, np.nan)
     df['obv'] = (np.sign(c.diff()) * df['volume']).fillna(0).cumsum(); df['obv_slope'] = df['obv'].diff(5) / df['vol_sma20'].replace(0, np.nan)
     
-    tp = (h + l + c) / 3; df['vwap'] = (tp * df['volume']).rolling(20).sum() / df['volume'].rolling(20).sum()
-    df['dist_vwap'] = (c - df['vwap']) / df['vwap'] * 100
-    
+    tp = (h + l + c) / 3; df['vwap'] = (tp * df['volume']).rolling(20).sum() / df['volume'].rolling(20).sum(); df['dist_vwap'] = (c - df['vwap']) / df['vwap'] * 100
     df['high_50'] = h.rolling(50).max().shift(1); df['low_50'] = l.rolling(50).min().shift(1)
     df['dist_res'] = (df['high_50'] - c) / c * 100; df['dist_sup'] = (c - df['low_50']) / c * 100
-    df['swing_low_20'] = l.rolling(20).min().shift(1)
     
     df['body_pct'] = (c - o) / o * 100; df['range_pct'] = (h - l) / o * 100
-    df['lower_wick_pct'] = (df[['open','close']].min(axis=1) - l) / o * 100
-    df['upper_wick_pct'] = (h - df[['open','close']].max(axis=1)) / o * 100
+    df['lower_wick_pct'] = (df[['open','close']].min(axis=1) - l) / o * 100; df['upper_wick_pct'] = (h - df[['open','close']].max(axis=1)) / o * 100
     df['ret_1bar'] = c.pct_change() * 100; df['ret_3bar'] = c.pct_change(3) * 100
     
     if btc_df is not None:
-        df = pd.merge_asof(df, btc_df[['ts', 'btc_close']].sort_values('ts'), on='ts', direction='backward')
-        df['btc_ret_1h'] = df['btc_close'].pct_change(4) * 100
-        df['btc_ret_4h'] = df['btc_close'].pct_change(16) * 100
+        df = pd.merge_asof(df.sort_values('ts'), btc_df[['ts', 'btc_close']].sort_values('ts'), on='ts', direction='backward')
+        df['btc_ret_1h'] = df['btc_close'].pct_change(4) * 100; df['btc_ret_4h'] = df['btc_close'].pct_change(16) * 100
         df['btc_corr'] = df['ret_1bar'].rolling(20).corr(df['btc_close'].pct_change()*100)
-    else:
+    else: 
         df['btc_ret_1h'] = 0.0; df['btc_ret_4h'] = 0.0; df['btc_corr'] = 0.5
-        
     df['hour_pkt'] = df['ts'].apply(lambda x: (datetime.fromtimestamp(x/1000, tz=timezone.utc) + timedelta(hours=5)).hour)
     return df
 
@@ -194,7 +204,6 @@ def check_p27(r):
 def check_p28(r):
     return (r['atr_pct'] <= 1.07 and r['range_pct'] > 2.50 and r['rsi7'] > 65.0 and r['close'] > r['open'])
 
-# 🆕 P29 ML Logic
 def check_p29_ml(df, i):
     if ML_MODEL is None or ML_FEATURES is None or i < 250: return False, 0
     row = df.iloc[i]
@@ -204,10 +213,28 @@ def check_p29_ml(df, i):
         return prob >= P29_ML_THRESHOLD, prob
     except: return False, 0
 
+def check_p30_dl(df, i):
+    if DL_MODEL is None or i < SEQ_LEN: return False, 0
+    try:
+        seq = df.iloc[i-SEQ_LEN+1 : i+1]
+        if seq.isna().any().any(): return False, 0
+        last_close = seq['close'].iloc[-1]
+        seq_feat = np.column_stack((
+            (seq['open'] - last_close) / last_close * 100,
+            (seq['high'] - last_close) / last_close * 100,
+            (seq['low'] - last_close) / last_close * 100,
+            (seq['close'] - last_close) / last_close * 100,
+            seq['rsi14'].values, seq['atr_pct'].values, seq['vol_ratio'].values
+        )).reshape(1, SEQ_LEN, 7)
+        prob = DL_MODEL.predict(seq_feat, verbose=0)[0][0]
+        return prob >= P30_DL_THRESHOLD, prob
+    except: return False, 0
+
 def check_signals_at(sym, df, i):
-    if i < 200 or i >= len(df): return None
+    if i < 250 or i >= len(df): return None
     r = df.iloc[i]; cands = []
     
+    # 8 Rules-Based
     if sym in P1_COINS and check_p1(r): cands.append({"pattern":"P1", "tp":1.2, "sl":2.5, "ts":TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
     if sym in P8_COINS and check_p8(r): cands.append({"pattern":"P8", "tp":1.0, "sl":2.5, "ts":TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
     if sym in P21_V5_COINS and check_p21_v5(df, i): cands.append({"pattern":"P21-v5", "tp":P21_TP, "sl":P21_SL, "ts":P21_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
@@ -217,11 +244,15 @@ def check_signals_at(sym, df, i):
     if sym in P27_COINS and check_p27(r): cands.append({"pattern":"P27", "tp":P27_TP, "sl":P27_SL, "ts":P27_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
     if sym in P28_COINS and check_p28(r): cands.append({"pattern":"P28", "tp":P28_TP, "sl":P28_SL, "ts":P28_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
     
-    # 🆕 P29-ML
+    # ML Model
     if sym in P29_COINS:
         ml_ok, ml_prob = check_p29_ml(df, i)
-        if ml_ok:
-            cands.append({"pattern":"P29-ML", "tp":P29_TP, "sl":P29_SL, "ts":P29_TIME_STOP, "ts_ms":r['ts'], "entry":r['close'], "ml_prob": ml_prob})
+        if ml_ok: cands.append({"pattern":"P29-ML", "tp":P29_TP, "sl":P29_SL, "ts":P29_TIME_STOP, "ts_ms":r['ts'], "entry":r['close'], "ml_prob": ml_prob})
+    
+    # DL Model
+    if sym in P30_COINS:
+        dl_ok, dl_prob = check_p30_dl(df, i)
+        if dl_ok: cands.append({"pattern":"P30-DL", "tp":P30_TP, "sl":P30_SL, "ts":P30_TIME_STOP, "ts_ms":r['ts'], "entry":r['close'], "dl_prob": dl_prob})
     
     if not cands: return None
     return max(cands, key=lambda x: PATTERN_PRIORITY.get(x["pattern"], 0))
@@ -251,8 +282,9 @@ def can_open(sym, ts, rows):
     return True
 
 def notify_sig(sig, tpkt):
-    ml_info = f"\n🤖 ML Prob: {sig.get('ml_prob', 0)*100:.1f}%" if 'ml_prob' in sig else ""
-    send_telegram_message(f"🚨 <b>{sig['pattern']} SIGNAL</b>\n🪙 {sig['symbol']}\n⏰ {tpkt.strftime('%Y-%m-%d %H:%M')} PKT\n🎯 Entry: {sig['entry']:.8g}\n📊 TP: +{sig['tp']}% | SL: -{sig['sl']}%\n🔥 TP-Trail: 0.3%{ml_info}")
+    ml_info = f"\n🤖 ML: {sig.get('ml_prob', 0)*100:.1f}%" if 'ml_prob' in sig else ""
+    dl_info = f"\n🧠 DL: {sig.get('dl_prob', 0)*100:.1f}%" if 'dl_prob' in sig else ""
+    send_telegram_message(f"🚨 <b>{sig['pattern']} SIGNAL</b>\n🪙 {sig['symbol']}\n⏰ {tpkt.strftime('%Y-%m-%d %H:%M')} PKT\n🎯 Entry: {sig['entry']:.8g}\n📊 TP: +{sig['tp']}% | SL: -{sig['sl']}%\n🔥 TP-Trail: 0.3%{ml_info}{dl_info}")
 
 def notify_tp_trigger(sym, tr, hi, csl):
     send_telegram_message(f"🎯 <b>TP HIT → TRAILING</b> {sym} ({tr['pattern']})\n🎯 Entry: {safe_float(tr['entry_open']):.8g}\n📈 High: {hi:.8g}\n🛡️ Trail SL: {csl:.8g} (+{((csl/safe_float(tr['entry_open']))-1)*100:.2f}%)")
@@ -283,7 +315,8 @@ def update_outcomes(coin_data, rows):
         if entry == 0 or tp == 0 or osl == 0: continue
 
         pat = r.get("pattern", "P1")
-        if pat == "P29-ML": ts = P29_TIME_STOP
+        if pat == "P30-DL": ts = P30_TIME_STOP
+        elif pat == "P29-ML": ts = P29_TIME_STOP
         elif pat.startswith("P21"): ts = P21_TIME_STOP
         elif pat == "P23": ts = P23_TIME_STOP
         elif pat == "P25": ts = P25_TIME_STOP
@@ -300,7 +333,6 @@ def update_outcomes(coin_data, rows):
 
         for i, (_, b) in enumerate(fb.iterrows()):
             held = i + 1; bts, bh, bl, bc = b['ts'], b['high'], b['low'], b['close']
-
             if bh > hi: hi = bh; bars_to_mfe = held
             if bl < lowest_price: lowest_price = bl; bars_to_mae = held
             if ((bl / entry) - 1) * 100 < mae: mae = ((bl / entry) - 1) * 100
@@ -340,14 +372,13 @@ def update_outcomes(coin_data, rows):
 
 def scan_market():
     print("="*50)
-    print("🚀 MEGA BOT v13 — 9 Patterns (ML Added)")
+    print("🚀 MEGA BOT v14 — 8 Rules + ML + DL")
     print("="*50)
-    if ML_MODEL is not None: print(f"   ✅ ML Model Active")
-    else: print(f"   ⚠️ ML Model Not Loaded")
+    if ML_MODEL is not None: print("   ✅ ML Model Active")
+    if DL_MODEL is not None: print("   ✅ DL Model Active")
     
     print("⏳ Waiting 45s..."); time.sleep(45)
 
-    print("📥 Fetching BTC context...")
     btc_df = fetch_candles("BTCUSDT")
     btc_close = btc_df[['ts', 'close']].rename(columns={'close': 'btc_close'}) if btc_df is not None else None
 
@@ -387,7 +418,8 @@ def scan_market():
             sig["symbol"] = sym
             notify_sig(sig, tp)
             ml_note = f" (ML {sig.get('ml_prob', 0)*100:.0f}%)" if 'ml_prob' in sig else ""
-            print(f"🚨 SIGNAL: {sig['pattern']}{ml_note} {sym} @ {sig['entry']:.6g}")
+            dl_note = f" (DL {sig.get('dl_prob', 0)*100:.0f}%)" if 'dl_prob' in sig else ""
+            print(f"🚨 SIGNAL: {sig['pattern']}{ml_note}{dl_note} {sym} @ {sig['entry']:.6g}")
             ns += 1
 
     if ns > 0: save_log(rows)
