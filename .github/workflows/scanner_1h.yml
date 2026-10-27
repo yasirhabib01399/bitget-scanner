@@ -1,8 +1,8 @@
 name: Bitget 1H DL Scanner
 
 on:
-  schedule:
-    - cron: '5 * * * *'
+  repository_dispatch:
+    types: [run-scanner-1h]
   workflow_dispatch:
 
 permissions:
