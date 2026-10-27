@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-# MEGA BOT 1H — Enhanced CNN+BiLSTM+Attention
+# MEGA BOT 1H — Enhanced CNN+BiLSTM+Attention (Filtered Coins)
 # ═══════════════════════════════════════════════════════════════════
 import csv
 import os
@@ -26,19 +26,18 @@ API_URL = "https://api.bitget.com/api/v2/spot/market/candles"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 SIGNAL_LOG_FILE = "signals_log_1h.csv"
 
+# 🆕 Filtered Coins (Dropped ARB, SUI, ATOM, APT)
 COINS = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT",
-    "LINKUSDT", "DOTUSDT", "AVAXUSDT", "SUIUSDT", "NEARUSDT",
-    "DOGEUSDT", "LTCUSDT", "BNBUSDT", "FETUSDT", "ATOMUSDT",
-    "UNIUSDT", "APTUSDT", "TRXUSDT", "BGBUSDT", "HYPEUSDT",
-    "SEIUSDT", "ARBUSDT", "INJUSDT", "TIAUSDT", "OPUSDT"
+    "ETHUSDT", "OPUSDT", "TIAUSDT", "BTCUSDT", "LINKUSDT", 
+    "XRPUSDT", "DOGEUSDT", "SEIUSDT", "LTCUSDT", "BNBUSDT",
+    "INJUSDT", "SOLUSDT", "ADAUSDT", "HYPEUSDT"
 ]
 
 SEQ_LEN = 24; TIME_STOP = 24; TP_PCT = 3.0; SL_PCT = 2.0
 TRAIL_PCT = 0.5; MAX_BARS_AFTER_TP = 24
 COOLDOWN_BARS = 12
 FEE_PCT = 0.2
-DL_THRESHOLD = 0.4113722  # 🆕 Yahan Kaggle se aaya hua 97% wala threshold daal dena
+DL_THRESHOLD = 0.4113722  # Kaggle se aya hua 97% quantile threshold
 
 # ─── Load DL Model ───
 DL_MODEL = None
@@ -138,7 +137,7 @@ def add_indicators(df):
 def check_dl_signal(df, i):
     if DL_MODEL is None or i < 24: return False, 0
     
-    # 🆕 EMA200 Filter
+    # EMA200 Filter
     if df.iloc[i]['close'] < df.iloc[i]['ema200']:
         return False, 0
         
@@ -262,7 +261,7 @@ def update_outcomes(coin_data, rows):
 
 def scan_market():
     print("="*50)
-    print("🚀 MEGA BOT 1H — Enhanced DL (EMA200 + Cooldown)")
+    print("🚀 MEGA BOT 1H — Filtered Coins")
     print("="*50)
     if DL_MODEL is not None: print("   ✅ 1H DL Model Active")
     
