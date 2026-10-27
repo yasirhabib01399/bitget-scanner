@@ -49,11 +49,20 @@ if HAS_ML:
 DL_MODEL = None
 if HAS_DL:
     try:
-        if os.path.exists("ml_dl_model.h5"):
-            DL_MODEL = tf.keras.models.load_model("ml_dl_model.h5", compile=False)
-            print("✅ DL Model loaded")
+        if os.path.exists("ml_dl_weights.weights.h5"):
+            # Model architecture define karo
+            DL_MODEL = tf.keras.models.Sequential([
+                tf.keras.layers.Conv1D(filters=32, kernel_size=3, activation='relu', input_shape=(20, 7)),
+                tf.keras.layers.MaxPooling1D(pool_size=2),
+                tf.keras.layers.LSTM(32, return_sequences=False),
+                tf.keras.layers.Dense(16, activation='relu'),
+                tf.keras.layers.Dropout(0.3),
+                tf.keras.layers.Dense(1, activation='sigmoid')
+            ])
+            # Weights load karo
+            DL_MODEL.load_weights("ml_dl_weights.weights.h5")
+            print("✅ DL Model weights loaded")
     except Exception as e: print(f"⚠️ DL load error: {e}")
-
 # ─── Coin Lists ───
 P1_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT","BNBUSDT","UNIUSDT","APTUSDT","ARBUSDT","DOTUSDT","DOGEUSDT","TIAUSDT"]
 P8_COINS = ["OPUSDT","ADAUSDT","SOLUSDT","LTCUSDT","ETHUSDT","SEIUSDT"]
