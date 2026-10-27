@@ -266,7 +266,7 @@ def scan_market():
     print("="*50)
     if DL_MODEL is not None: print("   ✅ 1H DL Model Active")
     
-    print("⏳ Waiting 15s..."); time.sleep(15)
+    print("⏳ Waiting 45s..."); time.sleep(45)
 
     coin_data = {}
     for sym in COINS:
