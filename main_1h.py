@@ -38,7 +38,7 @@ SEQ_LEN = 24; TIME_STOP = 24; TP_PCT = 3.0; SL_PCT = 2.0
 TRAIL_PCT = 0.5; MAX_BARS_AFTER_TP = 24
 COOLDOWN_BARS = 12
 FEE_PCT = 0.2
-DL_THRESHOLD = 0.45  # 🆕 Yahan Kaggle se aaya hua 97% wala threshold daal dena
+DL_THRESHOLD = 0.4113722  # 🆕 Yahan Kaggle se aaya hua 97% wala threshold daal dena
 
 # ─── Load DL Model ───
 DL_MODEL = None
