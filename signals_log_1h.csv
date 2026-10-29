@@ -1,2 +1,2 @@
 signal_ts_ms,signal_time_utc,signal_time_pkt,symbol,pattern,entry_close,entry_open,tp_pct,sl_pct,tp_price,sl_price,tp_triggered,tp_trigger_ts,highest_seen,current_sl,bars_since_tp,exit_price,exit_ts_ms,exit_time_pkt,result,bars_held,hours_to_exit,mfe_pct,mae_pct,bars_to_mfe,bars_to_mae,tp_hit_price,tp_hit_bar,pnl_pct,status
-1793300400000.0,2026-10-29 19:00,2026-10-30 00:00,LTCUSDT,DL-1H,58.07,,3.0,2.0,,,0,,,,0,,,,,,,,,,,,,,PENDING
+1793300400000.0,2026-10-29 19:00,2026-10-30 00:00,LTCUSDT,DL-1H,58.07,58.07,3.0,2.0,59.8121,56.9086,0,,58.07,56.9086,0,56.9086,1793304000000,2026-10-30 01:00,SL,1,1.00,+0.000,-6.406,0,1,,,-2.200,DONE
