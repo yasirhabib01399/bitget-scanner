@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-# MEGA BOT v14 — 8 Rules + P29-ML + P30-DL (CNN+LSTM)
+# MEGA BOT v15 — 8 Rules + P29-ML + P30-DL + V8 + V12 (naye, analysis mode)
 # ═══════════════════════════════════════════════════════════════════
 import csv
 import os
@@ -74,8 +74,11 @@ P27_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT","BNBUSDT","UNIUS
 P28_COINS = ["UNIUSDT", "ETHUSDT", "SEIUSDT", "SOLUSDT"]
 P29_COINS = ["ETHUSDT", "LTCUSDT", "APTUSDT", "DOGEUSDT", "SOLUSDT", "OPUSDT", "ARBUSDT", "ADAUSDT", "UNIUSDT"]
 P30_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT","BNBUSDT","UNIUSDT","APTUSDT","ARBUSDT","DOTUSDT","DOGEUSDT","TIAUSDT","OPUSDT","ETHUSDT","SEIUSDT"]
+# NAYE (Round-2 Colab backtest se; 365 din + out-of-sample pass)
+V8_COINS = ["LINKUSDT","BCHUSDT","ETHUSDT","UNIUSDT","FILUSDT","OPUSDT","ARBUSDT","AAVEUSDT","SUIUSDT","ADAUSDT","SEIUSDT","INJUSDT","DOTUSDT"]
+V12_COINS = ["TIAUSDT"]
 
-ALL_SYMBOLS = list(set(P1_COINS + P8_COINS + P21_V5_COINS + P21_V6_COINS + P23_COINS + P25_COINS + P27_COINS + P28_COINS + P29_COINS + P30_COINS))
+ALL_SYMBOLS = list(set(P1_COINS + P8_COINS + P21_V5_COINS + P21_V6_COINS + P23_COINS + P25_COINS + P27_COINS + P28_COINS + P29_COINS + P30_COINS + V8_COINS + V12_COINS))
 
 # ─── Config ───
 CANDLES_TO_CHECK = 3
@@ -95,13 +98,25 @@ P29_ML_THRESHOLD = 0.60
 P30_TIME_STOP = 25; P30_TP = 1.5; P30_SL = 1.5
 P30_DL_THRESHOLD = 0.65
 SEQ_LEN = 20
+V8_TIME_STOP = 20; V8_TP = 1.0; V8_SL = 2.5
+V12_TIME_STOP = 15; V12_TP = 1.5; V12_SL = 1.5
 
-PATTERN_PRIORITY = {"P30-DL": 11, "P29-ML": 10, "P21-v5": 8, "P25": 7, "P27": 6, "P28": 5, "P21-v6": 4, "P23": 3, "P1": 2, "P8": 1}
+# ─── NAYE PATTERNS (V8/V12) — ANALYSIS MODE ───
+# PAPER_PATTERNS mein jo pattern hon wo apni alag "track" par chalte hain: unka trade purane patterns ka
+# coin-slot block nahi karta (taake purane patterns ka data kharab na ho). CSV mein save bhi hote hain.
+# TELEGRAM_FOR_PAPER = True  -> in ke alerts bhi Telegram par jate hain (baqi patterns jaise).
+#                    False -> sirf CSV mein log, Telegram par alert nahi.
+# Jab trading setup karo to PAPER_PATTERNS = set() kar do (phir V8/V12 bhi aam patterns ki tarah chalenge).
+PAPER_PATTERNS = {"V8", "V12"}
+TELEGRAM_FOR_PAPER = True
+
+# V8/V12 ki priority sab se kam rakhi hai taake maujooda patterns (khas tor par P28, jis ka V8 wide version hai) pehle chunein
+PATTERN_PRIORITY = {"P30-DL": 11, "P29-ML": 10, "P21-v5": 8, "P25": 7, "P27": 6, "P28": 5, "P21-v6": 4, "P23": 3, "P1": 2, "P8": 1, "V8": 0.5, "V12": 0.4}
 
 CSV_FIELDS = [
-    "signal_ts_ms", "signal_time_utc", "signal_time_pkt", "symbol", "pattern", "entry_close", "entry_open", 
-    "tp_pct", "sl_pct", "tp_price", "sl_price", "tp_triggered", "tp_trigger_ts", "highest_seen", "current_sl", 
-    "bars_since_tp", "exit_price", "exit_ts_ms", "exit_time_pkt", "result", "bars_held", "hours_to_exit", 
+    "signal_ts_ms", "signal_time_utc", "signal_time_pkt", "symbol", "pattern", "entry_close", "entry_open",
+    "tp_pct", "sl_pct", "tp_price", "sl_price", "tp_triggered", "tp_trigger_ts", "highest_seen", "current_sl",
+    "bars_since_tp", "exit_price", "exit_ts_ms", "exit_time_pkt", "result", "bars_held", "hours_to_exit",
     "mfe_pct", "mae_pct", "bars_to_mfe", "bars_to_mae", "tp_hit_price", "tp_hit_bar", "pnl_pct", "status"
 ]
 
@@ -152,7 +167,7 @@ def add_indicators(df, btc_df=None):
     c = df['close']; h = df['high']; l = df['low']; o = df['open']
     df['rsi14'] = calc_rsi(c, 14); df['rsi2'] = calc_rsi(c, 2); df['rsi7'] = calc_rsi(c, 7)
     df['rsi14_lag1'] = df['rsi14'].shift(1); df['rsi14_lag2'] = df['rsi14'].shift(2)
-    
+
     df['ema20'] = c.ewm(span=20, adjust=False).mean()
     df['ema50'] = c.ewm(span=50, adjust=False).mean()
     df['ema200'] = c.ewm(span=200, adjust=False).mean()
@@ -161,32 +176,32 @@ def add_indicators(df, btc_df=None):
     df['dist_ema200'] = (c - df['ema200']) / df['ema200'] * 100
     df['trend_macro'] = (c > df['ema200']).astype(int)
     df['trend_micro'] = (df['ema20'] > df['ema50']).astype(int)
-    
+
     df['adx'] = calc_adx(df)
     df['atr14'] = calc_atr(df, 14); df['atr_pct'] = (df['atr14'] / c) * 100
-    
+
     df['bb_mid'] = c.rolling(20).mean(); df['bb_std'] = c.rolling(20).std()
     df['bb_upper'] = df['bb_mid'] + 2.0*df['bb_std']; df['bb_lower'] = df['bb_mid'] - 2.0*df['bb_std']
     df['bb_pos'] = (c - df['bb_lower']) / (df['bb_upper'] - df['bb_lower']).replace(0, np.nan)
-    
+
     df['kc_lower'] = df['ema20'] - 2.0*calc_atr(df, 20)
     df['swing_low_20'] = l.rolling(20).min().shift(1)
     df['vol_sma20'] = df['volume'].rolling(20).mean(); df['vol_ratio'] = df['volume'] / df['vol_sma20'].replace(0, np.nan)
     df['obv'] = (np.sign(c.diff()) * df['volume']).fillna(0).cumsum(); df['obv_slope'] = df['obv'].diff(5) / df['vol_sma20'].replace(0, np.nan)
-    
+
     tp = (h + l + c) / 3; df['vwap'] = (tp * df['volume']).rolling(20).sum() / df['volume'].rolling(20).sum(); df['dist_vwap'] = (c - df['vwap']) / df['vwap'] * 100
     df['high_50'] = h.rolling(50).max().shift(1); df['low_50'] = l.rolling(50).min().shift(1)
     df['dist_res'] = (df['high_50'] - c) / c * 100; df['dist_sup'] = (c - df['low_50']) / c * 100
-    
+
     df['body_pct'] = (c - o) / o * 100; df['range_pct'] = (h - l) / o * 100
     df['lower_wick_pct'] = (df[['open','close']].min(axis=1) - l) / o * 100; df['upper_wick_pct'] = (h - df[['open','close']].max(axis=1)) / o * 100
     df['ret_1bar'] = c.pct_change() * 100; df['ret_3bar'] = c.pct_change(3) * 100
-    
+
     if btc_df is not None:
         df = pd.merge_asof(df.sort_values('ts'), btc_df[['ts', 'btc_close']].sort_values('ts'), on='ts', direction='backward')
         df['btc_ret_1h'] = df['btc_close'].pct_change(4) * 100; df['btc_ret_4h'] = df['btc_close'].pct_change(16) * 100
         df['btc_corr'] = df['ret_1bar'].rolling(20).corr(df['btc_close'].pct_change()*100)
-    else: 
+    else:
         df['btc_ret_1h'] = 0.0; df['btc_ret_4h'] = 0.0; df['btc_corr'] = 0.5
     df['hour_pkt'] = df['ts'].apply(lambda x: (datetime.fromtimestamp(x/1000, tz=timezone.utc) + timedelta(hours=5)).hour)
     return df
@@ -212,6 +227,11 @@ def check_p27(r):
     return (r['atr_pct'] > 1.07 and 1.10 < r['lower_wick_pct'] <= 2.56 and r['dist_ema20'] > -0.60 and r['close'] > r['open'])
 def check_p28(r):
     return (r['atr_pct'] <= 1.07 and r['range_pct'] > 2.50 and r['rsi7'] > 65.0 and r['close'] > r['open'])
+# NAYE: V8 = P28 ka wide version (atr_pct <= 1.5), V12 = wick + BTC filter
+def check_v8(r):
+    return (r['atr_pct'] <= 1.5 and r['range_pct'] > 2.50 and r['rsi7'] > 65.0 and r['close'] > r['open'])
+def check_v12(r):
+    return (r['lower_wick_pct'] > 1.10 and r['atr_pct'] > 0.8 and r['dist_ema20'] > -1.0 and r['close'] > r['open'] and r['btc_ret_1h'] > -0.3)
 
 def check_p29_ml(df, i):
     if ML_MODEL is None or ML_FEATURES is None or i < 250: return False, 0
@@ -239,10 +259,12 @@ def check_p30_dl(df, i):
         return prob >= P30_DL_THRESHOLD, prob
     except: return False, 0
 
-def check_signals_at(sym, df, i):
+def check_signals_at(sym, df, i, paper=False):
+    # paper=False -> sirf LIVE patterns ka candidate; paper=True -> sirf PAPER patterns (V8/V12) ka candidate.
+    # Dono alag chalte hain taake paper signal live signal ki wajah se miss na ho (aur ulta bhi nahi).
     if i < 250 or i >= len(df): return None
     r = df.iloc[i]; cands = []
-    
+
     # 8 Rules-Based
     if sym in P1_COINS and check_p1(r): cands.append({"pattern":"P1", "tp":1.2, "sl":2.5, "ts":TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
     if sym in P8_COINS and check_p8(r): cands.append({"pattern":"P8", "tp":1.0, "sl":2.5, "ts":TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
@@ -252,17 +274,22 @@ def check_signals_at(sym, df, i):
     if sym in P25_COINS and check_p25(df, i): cands.append({"pattern":"P25", "tp":P25_TP, "sl":P25_SL, "ts":P25_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
     if sym in P27_COINS and check_p27(r): cands.append({"pattern":"P27", "tp":P27_TP, "sl":P27_SL, "ts":P27_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
     if sym in P28_COINS and check_p28(r): cands.append({"pattern":"P28", "tp":P28_TP, "sl":P28_SL, "ts":P28_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
-    
+
+    # NAYE (paper mode)
+    if sym in V8_COINS and check_v8(r): cands.append({"pattern":"V8", "tp":V8_TP, "sl":V8_SL, "ts":V8_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
+    if sym in V12_COINS and check_v12(r): cands.append({"pattern":"V12", "tp":V12_TP, "sl":V12_SL, "ts":V12_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
+
     # ML Model
-    if sym in P29_COINS:
+    if not paper and sym in P29_COINS:
         ml_ok, ml_prob = check_p29_ml(df, i)
         if ml_ok: cands.append({"pattern":"P29-ML", "tp":P29_TP, "sl":P29_SL, "ts":P29_TIME_STOP, "ts_ms":r['ts'], "entry":r['close'], "ml_prob": ml_prob})
-    
+
     # DL Model
-    if sym in P30_COINS:
+    if not paper and sym in P30_COINS:
         dl_ok, dl_prob = check_p30_dl(df, i)
         if dl_ok: cands.append({"pattern":"P30-DL", "tp":P30_TP, "sl":P30_SL, "ts":P30_TIME_STOP, "ts_ms":r['ts'], "entry":r['close'], "dl_prob": dl_prob})
-    
+
+    cands = [c for c in cands if is_paper(c["pattern"]) == paper]
     if not cands: return None
     return max(cands, key=lambda x: PATTERN_PRIORITY.get(x["pattern"], 0))
 
@@ -279,10 +306,15 @@ def save_log(rows):
             for r in rows: w.writerow(r)
     except Exception as e: print(f"⚠️ CSV error: {e}")
 
-def can_open(sym, ts, rows):
+def is_paper(pattern): return pattern in PAPER_PATTERNS
+
+def can_open(sym, ts, rows, pattern=""):
+    # Paper aur live trades alag gine jate hain: paper trade live pattern ka coin block nahi karta (aur ulta bhi nahi)
+    grp = is_paper(pattern)
     cd = COOLDOWN_BARS * 15 * 60 * 1000; last_exit = None
     for r in rows:
         if r.get("symbol") != sym: continue
+        if is_paper(r.get("pattern", "")) != grp: continue
         if r.get("status") in ("PENDING", "OPEN"): return False
         if r.get("status") == "DONE" and r.get("exit_ts_ms"):
             e = safe_int(r["exit_ts_ms"])
@@ -291,14 +323,17 @@ def can_open(sym, ts, rows):
     return True
 
 def notify_sig(sig, tpkt):
+    if is_paper(sig['pattern']) and not TELEGRAM_FOR_PAPER: return
     ml_info = f"\n🤖 ML: {sig.get('ml_prob', 0)*100:.1f}%" if 'ml_prob' in sig else ""
     dl_info = f"\n🧠 DL: {sig.get('dl_prob', 0)*100:.1f}%" if 'dl_prob' in sig else ""
     send_telegram_message(f"🚨 <b>{sig['pattern']} SIGNAL</b>\n🪙 {sig['symbol']}\n⏰ {tpkt.strftime('%Y-%m-%d %H:%M')} PKT\n🎯 Entry: {sig['entry']:.8g}\n📊 TP: +{sig['tp']}% | SL: -{sig['sl']}%\n🔥 TP-Trail: 0.3%{ml_info}{dl_info}")
 
 def notify_tp_trigger(sym, tr, hi, csl):
+    if is_paper(tr['pattern']) and not TELEGRAM_FOR_PAPER: return
     send_telegram_message(f"🎯 <b>TP HIT → TRAILING</b> {sym} ({tr['pattern']})\n🎯 Entry: {safe_float(tr['entry_open']):.8g}\n📈 High: {hi:.8g}\n🛡️ Trail SL: {csl:.8g} (+{((csl/safe_float(tr['entry_open']))-1)*100:.2f}%)")
 
 def notify_res(sym, tr, res, xp, pnl, mfe, mae):
+    if is_paper(tr['pattern']) and not TELEGRAM_FOR_PAPER: return
     em = "✅" if "TP" in res else ("🛑" if res == "SL" else "⏱")
     send_telegram_message(f"{em} <b>{res}</b> #{sym} ({tr['pattern']})\n🚪 Exit: {xp:.8g}\n💰 P&L: <b>{pnl:+.3f}%</b>\n📊 MFE: +{mfe:.2f}% | MAE: {mae:.2f}%")
 
@@ -331,8 +366,10 @@ def update_outcomes(coin_data, rows):
         elif pat == "P25": ts = P25_TIME_STOP
         elif pat == "P27": ts = P27_TIME_STOP
         elif pat == "P28": ts = P28_TIME_STOP
+        elif pat == "V8": ts = V8_TIME_STOP
+        elif pat == "V12": ts = V12_TIME_STOP
         else: ts = TIME_STOP
-        
+
         fb = df.iloc[idx+1 : idx+ts+2]
         if len(fb) == 0: continue
 
@@ -366,7 +403,7 @@ def update_outcomes(coin_data, rows):
             r["exit_time_pkt"] = (datetime.fromtimestamp(xt/1000, tz=timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%d %H:%M")
             r["pnl_pct"] = f"{pnl:+.3f}"; r["status"] = "DONE"
             mfe = ((hi / entry) - 1) * 100; mae_final = ((lowest_price / entry) - 1) * 100
-            r["mfe_pct"] = f"{mfe:+.3f}"; r["mae_pct"] = f"{mae_final:+.3f}" 
+            r["mfe_pct"] = f"{mfe:+.3f}"; r["mae_pct"] = f"{mae_final:+.3f}"
             r["bars_to_mfe"] = str(bars_to_mfe); r["bars_to_mae"] = str(bars_to_mae)
             r["highest_seen"] = f"{hi:.10g}"; r["current_sl"] = f"{csl:.10g}"
             updated = True; notify_res(sym, r, res, xp, pnl, mfe, mae_final)
@@ -374,18 +411,19 @@ def update_outcomes(coin_data, rows):
             r["highest_seen"] = f"{hi:.10g}"; r["current_sl"] = f"{csl:.10g}"; r["tp_triggered"] = "1" if tp_hit else "0"
             r["bars_since_tp"] = str(held - (tp_bar + 1) if tp_hit else 0); r["mae_pct"] = f"{mae:+.3f}"; updated = True
             mfe = ((hi / entry) - 1) * 100; mae_final = ((lowest_price / entry) - 1) * 100
-            r["mfe_pct"] = f"{mfe:+.3f}"; r["mae_pct"] = f"{mae_final:+.3f}" 
+            r["mfe_pct"] = f"{mfe:+.3f}"; r["mae_pct"] = f"{mae_final:+.3f}"
             r["bars_to_mfe"] = str(bars_to_mfe); r["bars_to_mae"] = str(bars_to_mae)
 
     return updated
 
 def scan_market():
     print("="*50)
-    print("🚀 MEGA BOT v14 — 8 Rules + ML + DL")
+    print("🚀 MEGA BOT v15 — 8 Rules + ML + DL + V8/V12 (paper)")
     print("="*50)
     if ML_MODEL is not None: print("   ✅ ML Model Active")
     if DL_MODEL is not None: print("   ✅ DL Model Active")
-    
+    if PAPER_PATTERNS: print(f"   📝 Paper mode: {sorted(PAPER_PATTERNS)}")
+
     print("⏳ Waiting 45s..."); time.sleep(45)
 
     btc_df = fetch_candles("BTCUSDT")
@@ -399,16 +437,16 @@ def scan_market():
     rows = load_log()
     if update_outcomes(coin_data, rows): save_log(rows); print("📒 Outcomes updated")
 
-    ns = 0; seen = {(r.get('symbol'), safe_int(r.get('signal_ts_ms', 0))) for r in rows if r.get('signal_ts_ms')}
+    ns = 0; seen = {(r.get('symbol'), safe_int(r.get('signal_ts_ms', 0)), is_paper(r.get('pattern', ''))) for r in rows if r.get('signal_ts_ms')}
 
     for sym, df in coin_data.items():
         n = len(df)
-        for off in range(1, CANDLES_TO_CHECK + 1):
+        for off, paper_flag in [(o, pf) for o in range(1, CANDLES_TO_CHECK + 1) for pf in (False, True)]:
             idx = n - off
             if idx < 250: continue
-            sig = check_signals_at(sym, df, idx)
-            if not sig or (sym, sig['ts_ms']) in seen: continue
-            if not can_open(sym, sig['ts_ms'], rows): continue
+            sig = check_signals_at(sym, df, idx, paper_flag)
+            if not sig or (sym, sig['ts_ms'], paper_flag) in seen: continue
+            if not can_open(sym, sig['ts_ms'], rows, sig['pattern']): continue
 
             tu = datetime.fromtimestamp(sig['ts_ms'] / 1000, tz=timezone.utc)
             tp = tu + timedelta(hours=5)
@@ -419,16 +457,17 @@ def scan_market():
                 "tp_pct": str(sig['tp']), "sl_pct": str(sig['sl']), "tp_price": "", "sl_price": "",
                 "tp_triggered": "0", "tp_trigger_ts": "", "highest_seen": "", "current_sl": "", "bars_since_tp": "0",
                 "exit_price": "", "exit_ts_ms": "", "exit_time_pkt": "", "bars_held": "", "hours_to_exit": "",
-                "mfe_pct": "", "mae_pct": "", "bars_to_mfe": "", "bars_to_mae": "", 
-                "tp_hit_price": "", "tp_hit_bar": "", 
+                "mfe_pct": "", "mae_pct": "", "bars_to_mfe": "", "bars_to_mae": "",
+                "tp_hit_price": "", "tp_hit_bar": "",
                 "pnl_pct": "", "result": "", "status": "PENDING"
             }
-            rows.append(nr); seen.add((sym, sig['ts_ms']))
+            rows.append(nr); seen.add((sym, sig['ts_ms'], paper_flag))
             sig["symbol"] = sym
             notify_sig(sig, tp)
             ml_note = f" (ML {sig.get('ml_prob', 0)*100:.0f}%)" if 'ml_prob' in sig else ""
             dl_note = f" (DL {sig.get('dl_prob', 0)*100:.0f}%)" if 'dl_prob' in sig else ""
-            print(f"🚨 SIGNAL: {sig['pattern']}{ml_note}{dl_note} {sym} @ {sig['entry']:.6g}")
+            paper_note = " [PAPER]" if is_paper(sig['pattern']) else ""
+            print(f"🚨 SIGNAL: {sig['pattern']}{paper_note}{ml_note}{dl_note} {sym} @ {sig['entry']:.6g}")
             ns += 1
 
     if ns > 0: save_log(rows)
