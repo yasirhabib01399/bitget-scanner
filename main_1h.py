@@ -27,14 +27,12 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 SIGNAL_LOG_FILE = "signals_log_1h.csv"
 
 # ════════════════════ COIN LISTS ════════════════════
-# DL coins (original)
 DL_COINS = [
     "ETHUSDT", "OPUSDT", "TIAUSDT", "BTCUSDT", "LINKUSDT",
     "XRPUSDT", "DOGEUSDT", "SEIUSDT", "LTCUSDT", "BNBUSDT",
     "INJUSDT", "SOLUSDT", "ADAUSDT", "HYPEUSDT"
 ]
 
-# Pattern-specific coins (from 365-day 1H backtest — filtered winners)
 P8_COINS  = ["OPUSDT", "SOLUSDT", "LTCUSDT", "ETHUSDT", "SEIUSDT"]
 P23_COINS = ["DOTUSDT", "SOLUSDT", "NEARUSDT"]
 P25_COINS = ["BTCUSDT", "SOLUSDT", "ADAUSDT", "LTCUSDT", "BNBUSDT",
@@ -43,7 +41,6 @@ P27_COINS = ["ADAUSDT", "NEARUSDT", "LTCUSDT", "UNIUSDT", "ARBUSDT",
              "DOGEUSDT", "OPUSDT", "SEIUSDT"]
 P28_COINS = ["UNIUSDT", "ETHUSDT", "SEIUSDT", "SOLUSDT"]
 
-# All symbols to fetch (union of all lists)
 ALL_SYMBOLS = list(set(
     DL_COINS + P8_COINS + P23_COINS + P25_COINS + P27_COINS + P28_COINS
 ))
@@ -51,10 +48,9 @@ ALL_SYMBOLS = list(set(
 # ════════════════════ CONFIG ════════════════════
 SEQ_LEN = 24
 FEE_PCT = 0.2
-COOLDOWN_BARS = 12        # 12 hours cooldown between trades on same coin
-DL_THRESHOLD = 0.4113722  # 97% quantile from Kaggle
+COOLDOWN_BARS = 12
+DL_THRESHOLD = 0.4113722
 
-# Per-pattern config
 PATTERN_TP_SL = {
     "DL-1H": (3.0, 2.0),
     "P8":    (1.0, 2.5),
@@ -64,36 +60,16 @@ PATTERN_TP_SL = {
     "P28":   (1.5, 1.5),
 }
 PATTERN_TIME_STOP = {
-    "DL-1H": 24,
-    "P8":    20,
-    "P23":   12,
-    "P25":   12,
-    "P27":   15,
-    "P28":   15,
+    "DL-1H": 24, "P8": 20, "P23": 12, "P25": 12, "P27": 15, "P28": 15,
 }
 PATTERN_TRAIL = {
-    "DL-1H": 0.5,
-    "P8":    0.3,
-    "P23":   0.3,
-    "P25":   0.3,
-    "P27":   0.3,
-    "P28":   0.3,
+    "DL-1H": 0.5, "P8": 0.3, "P23": 0.3, "P25": 0.3, "P27": 0.3, "P28": 0.3,
 }
 PATTERN_MAX_AFTER = {
-    "DL-1H": 24,
-    "P8":    15,
-    "P23":   15,
-    "P25":   15,
-    "P27":   15,
-    "P28":   15,
+    "DL-1H": 24, "P8": 15, "P23": 15, "P25": 15, "P27": 15, "P28": 15,
 }
 PATTERN_PRIORITY = {
-    "P23":   10,
-    "P28":   9,
-    "P25":   8,
-    "DL-1H": 7,
-    "P8":    6,
-    "P27":   5,
+    "P23": 10, "P28": 9, "P25": 8, "DL-1H": 7, "P8": 6, "P27": 5,
 }
 
 # ─── Load DL Model ───
@@ -131,6 +107,7 @@ CSV_FIELDS = [
 def safe_int(v):
     try: return int(float(v)) if v not in (None, "") else 0
     except: return 0
+
 def safe_float(v, d=0.0):
     try: return float(v) if v not in (None, "") else d
     except: return d
@@ -191,29 +168,30 @@ def add_indicators(df):
     c, h, l, o = df['close'], df['high'], df['low'], df['open']
     df['rsi14'] = calc_rsi(c, 14)
     df['rsi2']  = calc_rsi(c, 2)
-    df['rsi7']  = calc_rsi(c, 7)                           # 🆕 for P28
+    df['rsi7']  = calc_rsi(c, 7)
     tr = pd.concat([h-l, (h-c.shift()).abs(), (l-c.shift()).abs()], axis=1).max(axis=1)
-    df['atr14'] = tr.ewm(alpha=1/14, adjust=False).mean()   # 🆕 for kc_lower
+    df['atr14'] = tr.ewm(alpha=1/14, adjust=False).mean()
     df['atr_pct'] = (df['atr14'] / c) * 100
     df['bb_mid'] = c.rolling(20).mean()
     df['bb_std'] = c.rolling(20).std()
-    df['bb_upper'] = df['bb_mid'] + 2*df['bb_std']         # 🆕
-    df['bb_lower'] = df['bb_mid'] - 2*df['bb_std']         # 🆕
+    df['bb_upper'] = df['bb_mid'] + 2*df['bb_std']
+    df['bb_lower'] = df['bb_mid'] - 2*df['bb_std']
     df['bb_pos'] = (c - df['bb_lower']) / (df['bb_upper'] - df['bb_lower']).replace(0, np.nan)
     df['vol_sma20'] = df['volume'].rolling(20).mean()
     df['vol_ratio'] = df['volume'] / df['vol_sma20'].replace(0, np.nan)
 
-    df['ema20']  = c.ewm(span=20,  adjust=False).mean()    # 🆕 for kc_lower, dist_ema20
+    df['ema20']  = c.ewm(span=20,  adjust=False).mean()
     df['ema50']  = c.ewm(span=50,  adjust=False).mean()
     df['ema200'] = c.ewm(span=200, adjust=False).mean()
-    df['dist_ema20']  = (c - df['ema20'])  / df['ema20']  * 100   # 🆕 for P27
+    df['adx'] = calc_adx(df)                              # 🆕 FIX: adx column added
+    df['dist_ema20']  = (c - df['ema20'])  / df['ema20']  * 100
     df['dist_ema200'] = (c - df['ema200']) / df['ema200'] * 100
     df['trend_macro'] = (c > df['ema200']).astype(int)
-    df['kc_lower'] = df['ema20'] - 2.0 * calc_atr(df, 20)  # 🆕 for P8
+    df['kc_lower'] = df['ema20'] - 2.0 * calc_atr(df, 20)
 
     df['lower_wick_pct'] = (df[['open','close']].min(axis=1) - l) / o * 100
     df['upper_wick_pct'] = (h - df[['open','close']].max(axis=1)) / o * 100
-    df['range_pct'] = (h - l) / o * 100                    # 🆕 for P28
+    df['range_pct'] = (h - l) / o * 100
     df['momentum_5'] = c.pct_change(5) * 100
 
     tp_vwap = (h + l + c) / 3
@@ -228,12 +206,10 @@ def add_indicators(df):
 
 # ════════════════════ PATTERN CHECKS ════════════════════
 def check_p8(r):
-    """Keltner Channel oversold bounce (uptrend)."""
     return (r['close'] < r['kc_lower'] and r['rsi14'] < 35 and
             r['close'] > r['ema200'] and r['adx'] < 50)
 
 def check_p23(df, i):
-    """Uptrend pullback after RSI2 extreme dip."""
     if i < 1: return False
     r, p = df.iloc[i], df.iloc[i-1]
     return (r['close'] > r['ema200'] and r['close'] > r['ema50'] and
@@ -242,18 +218,15 @@ def check_p23(df, i):
             r['vol_ratio'] > 0.5)
 
 def check_p25(r):
-    """Trend continuation after RSI2 dip in strong trend."""
     return (r['adx'] > 30 and r['rsi14'] > 55 and 2 < r['dist_ema200'] < 10 and
             r['rsi2'] < 40 and r['bb_pos'] > 0.5 and r['vol_ratio'] >= 0.8 and
             r['close'] > r['open'])
 
 def check_p27(r):
-    """Long lower wick with momentum (reversal)."""
     return (r['atr_pct'] > 1.07 and 1.10 < r['lower_wick_pct'] <= 2.56 and
             r['dist_ema20'] > -0.60 and r['close'] > r['open'])
 
 def check_p28(r):
-    """Big range bar with RSI7 overbought (breakout continuation)."""
     return (r['atr_pct'] <= 1.07 and r['range_pct'] > 2.50 and
             r['rsi7'] > 65.0 and r['close'] > r['open'])
 
@@ -482,10 +455,8 @@ def scan_market():
             if (sym, r['ts']) in seen: continue
             if not can_open(sym, r['ts'], rows): continue
 
-            # Collect all candidate signals
             candidates = []
 
-            # DL
             if sym in DL_COINS:
                 dl_ok, dl_prob = check_dl_signal(df, idx)
                 if dl_ok:
@@ -495,30 +466,24 @@ def scan_market():
                         "dl_prob": dl_prob,
                     })
 
-            # P8
             if sym in P8_COINS and check_p8(r):
                 candidates.append({"pattern": "P8", "entry": r['close']})
 
-            # P23
             if sym in P23_COINS and check_p23(df, idx):
                 candidates.append({"pattern": "P23", "entry": r['close']})
 
-            # P25
             if sym in P25_COINS and check_p25(r):
                 candidates.append({"pattern": "P25", "entry": r['close']})
 
-            # P27
             if sym in P27_COINS and check_p27(r):
                 candidates.append({"pattern": "P27", "entry": r['close']})
 
-            # P28
             if sym in P28_COINS and check_p28(r):
                 candidates.append({"pattern": "P28", "entry": r['close']})
 
             if not candidates:
                 continue
 
-            # Pick highest priority
             best = max(candidates, key=lambda x: PATTERN_PRIORITY.get(x["pattern"], 0))
             pat = best["pattern"]
             tp_pct, sl_pct = PATTERN_TP_SL.get(pat, (3.0, 2.0))
