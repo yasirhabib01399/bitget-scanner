@@ -183,7 +183,7 @@ def add_indicators(df):
     df['ema20']  = c.ewm(span=20,  adjust=False).mean()
     df['ema50']  = c.ewm(span=50,  adjust=False).mean()
     df['ema200'] = c.ewm(span=200, adjust=False).mean()
-    df['adx'] = calc_adx(df)                              # 🆕 FIX: adx column added
+    df['adx'] = calc_adx(df)
     df['dist_ema20']  = (c - df['ema20'])  / df['ema20']  * 100
     df['dist_ema200'] = (c - df['ema200']) / df['ema200'] * 100
     df['trend_macro'] = (c > df['ema200']).astype(int)
@@ -485,6 +485,7 @@ def scan_market():
                 continue
 
             best = max(candidates, key=lambda x: PATTERN_PRIORITY.get(x["pattern"], 0))
+            best["symbol"] = sym                                    # 🆕 FIX
             pat = best["pattern"]
             tp_pct, sl_pct = PATTERN_TP_SL.get(pat, (3.0, 2.0))
 
