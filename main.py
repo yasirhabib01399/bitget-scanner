@@ -50,7 +50,6 @@ DL_MODEL = None
 if HAS_DL:
     try:
         if os.path.exists("ml_dl_weights.weights.h5"):
-            # Model architecture define karo
             DL_MODEL = tf.keras.models.Sequential([
                 tf.keras.layers.Conv1D(filters=32, kernel_size=3, activation='relu', input_shape=(20, 7)),
                 tf.keras.layers.MaxPooling1D(pool_size=2),
@@ -59,10 +58,10 @@ if HAS_DL:
                 tf.keras.layers.Dropout(0.3),
                 tf.keras.layers.Dense(1, activation='sigmoid')
             ])
-            # Weights load karo
             DL_MODEL.load_weights("ml_dl_weights.weights.h5")
             print("✅ DL Model weights loaded")
     except Exception as e: print(f"⚠️ DL load error: {e}")
+
 # ─── Coin Lists ───
 P1_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT","BNBUSDT","UNIUSDT","APTUSDT","ARBUSDT","DOTUSDT","DOGEUSDT","TIAUSDT"]
 P8_COINS = ["OPUSDT","ADAUSDT","SOLUSDT","LTCUSDT","ETHUSDT","SEIUSDT"]
@@ -74,7 +73,6 @@ P27_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT","BNBUSDT","UNIUS
 P28_COINS = ["UNIUSDT", "ETHUSDT", "SEIUSDT", "SOLUSDT"]
 P29_COINS = ["ETHUSDT", "LTCUSDT", "APTUSDT", "DOGEUSDT", "SOLUSDT", "OPUSDT", "ARBUSDT", "ADAUSDT", "UNIUSDT"]
 P30_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT","BNBUSDT","UNIUSDT","APTUSDT","ARBUSDT","DOTUSDT","DOGEUSDT","TIAUSDT","OPUSDT","ETHUSDT","SEIUSDT"]
-# NAYE (Round-2 Colab backtest se; 365 din + out-of-sample pass)
 V8_COINS = ["LINKUSDT","BCHUSDT","ETHUSDT","UNIUSDT","FILUSDT","OPUSDT","ARBUSDT","AAVEUSDT","SUIUSDT","ADAUSDT","SEIUSDT","INJUSDT","DOTUSDT"]
 V12_COINS = ["TIAUSDT"]
 
@@ -102,19 +100,20 @@ V8_TIME_STOP = 20; V8_TP = 1.0; V8_SL = 2.5
 V12_TIME_STOP = 15; V12_TP = 1.5; V12_SL = 1.5
 
 # ─── NAYE PATTERNS (V8/V12) — ANALYSIS MODE ───
-# PAPER_PATTERNS mein jo pattern hon wo apni alag "track" par chalte hain: unka trade purane patterns ka
-# coin-slot block nahi karta (taake purane patterns ka data kharab na ho). CSV mein save bhi hote hain.
-# TELEGRAM_FOR_PAPER = True  -> in ke alerts bhi Telegram par jate hain (baqi patterns jaise).
-#                    False -> sirf CSV mein log, Telegram par alert nahi.
-# Jab trading setup karo to PAPER_PATTERNS = set() kar do (phir V8/V12 bhi aam patterns ki tarah chalenge).
 PAPER_PATTERNS = {"V8", "V12"}
 TELEGRAM_FOR_PAPER = True
 
-# V8/V12 ki priority sab se kam rakhi hai taake maujooda patterns (khas tor par P28, jis ka V8 wide version hai) pehle chunein
 PATTERN_PRIORITY = {"P30-DL": 11, "P29-ML": 10, "P21-v5": 8, "P25": 7, "P27": 6, "P28": 5, "P21-v6": 4, "P23": 3, "P1": 2, "P8": 1, "V8": 0.5, "V12": 0.4}
 
+# ═══════════════════════════════════════════════════════════════════
+# 🆕 CSV_FIELDS — 7 ENTRY SNAPSHOT COLUMNS ADDED
+# ═══════════════════════════════════════════════════════════════════
 CSV_FIELDS = [
     "signal_ts_ms", "signal_time_utc", "signal_time_pkt", "symbol", "pattern", "entry_close", "entry_open",
+    # 🆕 ENTRY SNAPSHOT — timeout analysis ke liye
+    "entry_rsi14", "entry_rsi2", "entry_adx", "entry_vol_ratio",
+    "entry_atr_pct", "entry_bb_pos", "entry_dist_ema200",
+    # existing fields
     "tp_pct", "sl_pct", "tp_price", "sl_price", "tp_triggered", "tp_trigger_ts", "highest_seen", "current_sl",
     "bars_since_tp", "exit_price", "exit_ts_ms", "exit_time_pkt", "result", "bars_held", "hours_to_exit",
     "mfe_pct", "mae_pct", "bars_to_mfe", "bars_to_mae", "tp_hit_price", "tp_hit_bar", "pnl_pct", "status"
@@ -227,7 +226,6 @@ def check_p27(r):
     return (r['atr_pct'] > 1.07 and 1.10 < r['lower_wick_pct'] <= 2.56 and r['dist_ema20'] > -0.60 and r['close'] > r['open'])
 def check_p28(r):
     return (r['atr_pct'] <= 1.07 and r['range_pct'] > 2.50 and r['rsi7'] > 65.0 and r['close'] > r['open'])
-# NAYE: V8 = P28 ka wide version (atr_pct <= 1.5), V12 = wick + BTC filter
 def check_v8(r):
     return (r['atr_pct'] <= 1.5 and r['range_pct'] > 2.50 and r['rsi7'] > 65.0 and r['close'] > r['open'])
 def check_v12(r):
@@ -260,12 +258,9 @@ def check_p30_dl(df, i):
     except: return False, 0
 
 def check_signals_at(sym, df, i, paper=False):
-    # paper=False -> sirf LIVE patterns ka candidate; paper=True -> sirf PAPER patterns (V8/V12) ka candidate.
-    # Dono alag chalte hain taake paper signal live signal ki wajah se miss na ho (aur ulta bhi nahi).
     if i < 250 or i >= len(df): return None
     r = df.iloc[i]; cands = []
 
-    # 8 Rules-Based
     if sym in P1_COINS and check_p1(r): cands.append({"pattern":"P1", "tp":1.2, "sl":2.5, "ts":TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
     if sym in P8_COINS and check_p8(r): cands.append({"pattern":"P8", "tp":1.0, "sl":2.5, "ts":TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
     if sym in P21_V5_COINS and check_p21_v5(df, i): cands.append({"pattern":"P21-v5", "tp":P21_TP, "sl":P21_SL, "ts":P21_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
@@ -275,16 +270,13 @@ def check_signals_at(sym, df, i, paper=False):
     if sym in P27_COINS and check_p27(r): cands.append({"pattern":"P27", "tp":P27_TP, "sl":P27_SL, "ts":P27_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
     if sym in P28_COINS and check_p28(r): cands.append({"pattern":"P28", "tp":P28_TP, "sl":P28_SL, "ts":P28_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
 
-    # NAYE (paper mode)
     if sym in V8_COINS and check_v8(r): cands.append({"pattern":"V8", "tp":V8_TP, "sl":V8_SL, "ts":V8_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
     if sym in V12_COINS and check_v12(r): cands.append({"pattern":"V12", "tp":V12_TP, "sl":V12_SL, "ts":V12_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
 
-    # ML Model
     if not paper and sym in P29_COINS:
         ml_ok, ml_prob = check_p29_ml(df, i)
         if ml_ok: cands.append({"pattern":"P29-ML", "tp":P29_TP, "sl":P29_SL, "ts":P29_TIME_STOP, "ts_ms":r['ts'], "entry":r['close'], "ml_prob": ml_prob})
 
-    # DL Model
     if not paper and sym in P30_COINS:
         dl_ok, dl_prob = check_p30_dl(df, i)
         if dl_ok: cands.append({"pattern":"P30-DL", "tp":P30_TP, "sl":P30_SL, "ts":P30_TIME_STOP, "ts_ms":r['ts'], "entry":r['close'], "dl_prob": dl_prob})
@@ -309,7 +301,6 @@ def save_log(rows):
 def is_paper(pattern): return pattern in PAPER_PATTERNS
 
 def can_open(sym, ts, rows, pattern=""):
-    # Paper aur live trades alag gine jate hain: paper trade live pattern ka coin block nahi karta (aur ulta bhi nahi)
     grp = is_paper(pattern)
     cd = COOLDOWN_BARS * 15 * 60 * 1000; last_exit = None
     for r in rows:
@@ -448,12 +439,24 @@ def scan_market():
             if not sig or (sym, sig['ts_ms'], paper_flag) in seen: continue
             if not can_open(sym, sig['ts_ms'], rows, sig['pattern']): continue
 
+            # 🆕 ENTRY SNAPSHOT — signal bar ke indicators
+            r_entry = df.iloc[idx]
+
             tu = datetime.fromtimestamp(sig['ts_ms'] / 1000, tz=timezone.utc)
             tp = tu + timedelta(hours=5)
 
             nr = {
                 "signal_ts_ms": str(sig['ts_ms']), "signal_time_utc": tu.strftime("%Y-%m-%d %H:%M"), "signal_time_pkt": tp.strftime("%Y-%m-%d %H:%M"),
                 "symbol": sym, "pattern": sig['pattern'], "entry_close": f"{sig['entry']:.10g}", "entry_open": "",
+                # 🆕 ENTRY SNAPSHOT VALUES
+                "entry_rsi14":       f"{r_entry['rsi14']:.2f}",
+                "entry_rsi2":        f"{r_entry['rsi2']:.2f}",
+                "entry_adx":         f"{r_entry['adx']:.2f}",
+                "entry_vol_ratio":   f"{r_entry['vol_ratio']:.2f}",
+                "entry_atr_pct":     f"{r_entry['atr_pct']:.3f}",
+                "entry_bb_pos":      f"{r_entry['bb_pos']:.3f}",
+                "entry_dist_ema200": f"{r_entry['dist_ema200']:.2f}",
+                # existing fields
                 "tp_pct": str(sig['tp']), "sl_pct": str(sig['sl']), "tp_price": "", "sl_price": "",
                 "tp_triggered": "0", "tp_trigger_ts": "", "highest_seen": "", "current_sl": "", "bars_since_tp": "0",
                 "exit_price": "", "exit_ts_ms": "", "exit_time_pkt": "", "bars_held": "", "hours_to_exit": "",
