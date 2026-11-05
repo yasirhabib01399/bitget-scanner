@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-# MEGA BOT v15 — 8 Rules + P29-ML + P30-DL + V8 + V12 (naye, analysis mode)
+# MEGA BOT v15 — 8 Rules + P29-ML + P30-DL + V8 + V12 + P32 + P36
 # ═══════════════════════════════════════════════════════════════════
 import csv
 import os
@@ -75,8 +75,11 @@ P29_COINS = ["ETHUSDT", "LTCUSDT", "APTUSDT", "DOGEUSDT", "SOLUSDT", "OPUSDT", "
 P30_COINS = ["BTCUSDT","SOLUSDT","ADAUSDT","NEARUSDT","LTCUSDT","BNBUSDT","UNIUSDT","APTUSDT","ARBUSDT","DOTUSDT","DOGEUSDT","TIAUSDT","OPUSDT","ETHUSDT","SEIUSDT"]
 V8_COINS = ["LINKUSDT","BCHUSDT","ETHUSDT","UNIUSDT","FILUSDT","OPUSDT","ARBUSDT","AAVEUSDT","SUIUSDT","ADAUSDT","SEIUSDT","INJUSDT","DOTUSDT"]
 V12_COINS = ["TIAUSDT"]
+# 🆕 NEW — 365-day backtest winners only
+P32_COINS = ["INJUSDT", "FILUSDT", "ZECUSDT"]          # P32-Squeeze best coins
+P36_COINS = ["ZECUSDT", "SUIUSDT", "TIAUSDT", "DOTUSDT"]  # P36-VolBlast best coins
 
-ALL_SYMBOLS = list(set(P1_COINS + P8_COINS + P21_V5_COINS + P21_V6_COINS + P23_COINS + P25_COINS + P27_COINS + P28_COINS + P29_COINS + P30_COINS + V8_COINS + V12_COINS))
+ALL_SYMBOLS = list(set(P1_COINS + P8_COINS + P21_V5_COINS + P21_V6_COINS + P23_COINS + P25_COINS + P27_COINS + P28_COINS + P29_COINS + P30_COINS + V8_COINS + V12_COINS + P32_COINS + P36_COINS))
 
 # ─── Config ───
 CANDLES_TO_CHECK = 3
@@ -98,22 +101,30 @@ P30_DL_THRESHOLD = 0.65
 SEQ_LEN = 20
 V8_TIME_STOP = 20; V8_TP = 1.0; V8_SL = 2.5
 V12_TIME_STOP = 15; V12_TP = 1.5; V12_SL = 1.5
+# 🆕 NEW — P32-Squeeze + P36-VolBlast config
+P32_TIME_STOP = 12; P32_TP = 1.5; P32_SL = 1.5
+P36_TIME_STOP = 15; P36_TP = 1.5; P36_SL = 2.0
 
-# ─── NAYE PATTERNS (V8/V12) — ANALYSIS MODE ───
-PAPER_PATTERNS = {"V8", "V12"}
+# ─── NAYE PATTERNS (V8/V12/P32/P36) — ANALYSIS MODE ───
+PAPER_PATTERNS = {"V8", "V12", "P32-Squeeze", "P36-VolBlast"}
 TELEGRAM_FOR_PAPER = True
 
-PATTERN_PRIORITY = {"P30-DL": 11, "P29-ML": 10, "P21-v5": 8, "P25": 7, "P27": 6, "P28": 5, "P21-v6": 4, "P23": 3, "P1": 2, "P8": 1, "V8": 0.5, "V12": 0.4}
+PATTERN_PRIORITY = {
+    "P30-DL": 11, "P29-ML": 10,
+    "P32-Squeeze": 9,         # 🆕 high priority (INJ 66% WR, +42.8%)
+    "P36-VolBlast": 8.5,      # 🆕 high priority (ZEC 60% WR, +32.1%)
+    "P21-v5": 8, "P25": 7, "P27": 6, "P28": 5,
+    "P21-v6": 4, "P23": 3, "P1": 2, "P8": 1,
+    "V8": 0.5, "V12": 0.4
+}
 
 # ═══════════════════════════════════════════════════════════════════
-# 🆕 CSV_FIELDS — 7 ENTRY SNAPSHOT COLUMNS ADDED
+# CSV_FIELDS — 7 ENTRY SNAPSHOT COLUMNS
 # ═══════════════════════════════════════════════════════════════════
 CSV_FIELDS = [
     "signal_ts_ms", "signal_time_utc", "signal_time_pkt", "symbol", "pattern", "entry_close", "entry_open",
-    # 🆕 ENTRY SNAPSHOT — timeout analysis ke liye
     "entry_rsi14", "entry_rsi2", "entry_adx", "entry_vol_ratio",
     "entry_atr_pct", "entry_bb_pos", "entry_dist_ema200",
-    # existing fields
     "tp_pct", "sl_pct", "tp_price", "sl_price", "tp_triggered", "tp_trigger_ts", "highest_seen", "current_sl",
     "bars_since_tp", "exit_price", "exit_ts_ms", "exit_time_pkt", "result", "bars_held", "hours_to_exit",
     "mfe_pct", "mae_pct", "bars_to_mfe", "bars_to_mae", "tp_hit_price", "tp_hit_bar", "pnl_pct", "status"
@@ -183,6 +194,10 @@ def add_indicators(df, btc_df=None):
     df['bb_upper'] = df['bb_mid'] + 2.0*df['bb_std']; df['bb_lower'] = df['bb_mid'] - 2.0*df['bb_std']
     df['bb_pos'] = (c - df['bb_lower']) / (df['bb_upper'] - df['bb_lower']).replace(0, np.nan)
 
+    # 🆕 P32-Squeeze ke liye BB width tracking
+    df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_mid'].replace(0, np.nan)
+    df['bb_width_min_20'] = df['bb_width'].rolling(20).min()
+
     df['kc_lower'] = df['ema20'] - 2.0*calc_atr(df, 20)
     df['swing_low_20'] = l.rolling(20).min().shift(1)
     df['vol_sma20'] = df['volume'].rolling(20).mean(); df['vol_ratio'] = df['volume'] / df['vol_sma20'].replace(0, np.nan)
@@ -231,6 +246,27 @@ def check_v8(r):
 def check_v12(r):
     return (r['lower_wick_pct'] > 1.10 and r['atr_pct'] > 0.8 and r['dist_ema20'] > -1.0 and r['close'] > r['open'] and r['btc_ret_1h'] > -0.3)
 
+# ═══════════════════════════════════════════════════════════════════
+# 🆕 NEW PATTERNS — 365-day backtest winners
+# ═══════════════════════════════════════════════════════════════════
+def check_p32_squeeze(df, i):
+    """P32-Squeeze: BB compression → expansion breakout
+       Backtest: INJ 66% WR +42.8% | FIL 50% WR +21% | ZEC 48.3% WR +11.9%"""
+    if i < 30: return False
+    r, p = df.iloc[i], df.iloc[i-1]
+    return (p['bb_width'] <= p['bb_width_min_20'] * 1.5
+            and r['close'] > p['bb_upper']
+            and r['vol_ratio'] > 1.3
+            and r['close'] > r['open'])
+
+def check_p36_volblast(r):
+    """P36-VolBlast: 3x volume spike + green + above BB mid
+       Backtest: ZEC 60% WR +32.1% | SUI 56.2% +14.3% | TIA 53.7% +13.1% | DOT 54.3% +9.4%"""
+    return (r['vol_ratio'] > 3.0
+            and r['close'] > r['open']
+            and r['close'] > r['bb_mid']
+            and r['rsi14'] < 75)
+
 def check_p29_ml(df, i):
     if ML_MODEL is None or ML_FEATURES is None or i < 250: return False, 0
     row = df.iloc[i]
@@ -272,6 +308,14 @@ def check_signals_at(sym, df, i, paper=False):
 
     if sym in V8_COINS and check_v8(r): cands.append({"pattern":"V8", "tp":V8_TP, "sl":V8_SL, "ts":V8_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
     if sym in V12_COINS and check_v12(r): cands.append({"pattern":"V12", "tp":V12_TP, "sl":V12_SL, "ts":V12_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
+
+    # 🆕 P32-Squeeze
+    if sym in P32_COINS and check_p32_squeeze(df, i):
+        cands.append({"pattern":"P32-Squeeze", "tp":P32_TP, "sl":P32_SL, "ts":P32_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
+
+    # 🆕 P36-VolBlast
+    if sym in P36_COINS and check_p36_volblast(r):
+        cands.append({"pattern":"P36-VolBlast", "tp":P36_TP, "sl":P36_SL, "ts":P36_TIME_STOP, "ts_ms":r['ts'], "entry":r['close']})
 
     if not paper and sym in P29_COINS:
         ml_ok, ml_prob = check_p29_ml(df, i)
@@ -352,6 +396,8 @@ def update_outcomes(coin_data, rows):
         pat = r.get("pattern", "P1")
         if pat == "P30-DL": ts = P30_TIME_STOP
         elif pat == "P29-ML": ts = P29_TIME_STOP
+        elif pat == "P32-Squeeze": ts = P32_TIME_STOP
+        elif pat == "P36-VolBlast": ts = P36_TIME_STOP
         elif pat.startswith("P21"): ts = P21_TIME_STOP
         elif pat == "P23": ts = P23_TIME_STOP
         elif pat == "P25": ts = P25_TIME_STOP
@@ -409,7 +455,7 @@ def update_outcomes(coin_data, rows):
 
 def scan_market():
     print("="*50)
-    print("🚀 MEGA BOT v15 — 8 Rules + ML + DL + V8/V12 (paper)")
+    print("🚀 MEGA BOT v15 — 8 Rules + ML + DL + V8/V12 + P32/P36 (paper)")
     print("="*50)
     if ML_MODEL is not None: print("   ✅ ML Model Active")
     if DL_MODEL is not None: print("   ✅ DL Model Active")
@@ -439,7 +485,6 @@ def scan_market():
             if not sig or (sym, sig['ts_ms'], paper_flag) in seen: continue
             if not can_open(sym, sig['ts_ms'], rows, sig['pattern']): continue
 
-            # 🆕 ENTRY SNAPSHOT — signal bar ke indicators
             r_entry = df.iloc[idx]
 
             tu = datetime.fromtimestamp(sig['ts_ms'] / 1000, tz=timezone.utc)
@@ -448,7 +493,6 @@ def scan_market():
             nr = {
                 "signal_ts_ms": str(sig['ts_ms']), "signal_time_utc": tu.strftime("%Y-%m-%d %H:%M"), "signal_time_pkt": tp.strftime("%Y-%m-%d %H:%M"),
                 "symbol": sym, "pattern": sig['pattern'], "entry_close": f"{sig['entry']:.10g}", "entry_open": "",
-                # 🆕 ENTRY SNAPSHOT VALUES
                 "entry_rsi14":       f"{r_entry['rsi14']:.2f}",
                 "entry_rsi2":        f"{r_entry['rsi2']:.2f}",
                 "entry_adx":         f"{r_entry['adx']:.2f}",
@@ -456,7 +500,6 @@ def scan_market():
                 "entry_atr_pct":     f"{r_entry['atr_pct']:.3f}",
                 "entry_bb_pos":      f"{r_entry['bb_pos']:.3f}",
                 "entry_dist_ema200": f"{r_entry['dist_ema200']:.2f}",
-                # existing fields
                 "tp_pct": str(sig['tp']), "sl_pct": str(sig['sl']), "tp_price": "", "sl_price": "",
                 "tp_triggered": "0", "tp_trigger_ts": "", "highest_seen": "", "current_sl": "", "bars_since_tp": "0",
                 "exit_price": "", "exit_ts_ms": "", "exit_time_pkt": "", "bars_held": "", "hours_to_exit": "",
